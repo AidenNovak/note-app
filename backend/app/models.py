@@ -270,6 +270,31 @@ class NoteLike(Base):
     shared_note: Mapped["SharedNote"] = relationship(back_populates="likes")
 
 
+class GroundPost(Base):
+    """A post on the Ground feed — can be a mind graph snapshot or an insight report."""
+    __tablename__ = "ground_posts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    post_type: Mapped[str] = mapped_column(String(32))  # note | mind_graph | insight
+    ref_id: Mapped[str] = mapped_column(String(36), index=True)  # note_id or insight_id
+    title: Mapped[str] = mapped_column(String(255))
+    preview: Mapped[str] = mapped_column(Text, default="")
+    extra_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # graph snapshot, etc.
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    user: Mapped["User"] = relationship()
+    post_likes: Mapped[List["GroundPostLike"]] = relationship(back_populates="post", cascade="all, delete-orphan")
+
+
+class GroundPostLike(Base):
+    __tablename__ = "ground_post_likes"
+    __table_args__ = (UniqueConstraint("post_id", "user_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    post_id: Mapped[str] = mapped_column(String(36), ForeignKey("ground_posts.id"), index=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    post: Mapped["GroundPost"] = relationship(back_populates="post_likes")
+
+
 class NoteEmbedding(Base):
     __tablename__ = "note_embeddings"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

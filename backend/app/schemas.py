@@ -422,6 +422,19 @@ class GroundFeedItem(BaseModel):
     shared_at: datetime
 
 
+class GroundPostOut(BaseModel):
+    id: str
+    post_type: str  # note | mind_graph | insight
+    ref_id: str
+    author: PublicUserOut
+    title: str
+    preview: str
+    extra_json: str | None = None
+    likes: int = 0
+    liked_by_me: bool = False
+    created_at: datetime
+
+
 # ── Profile ──────────────────────────────────────────
 
 class ProfileUpdate(BaseModel):
