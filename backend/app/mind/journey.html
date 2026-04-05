@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>atelier — Journey Map</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0a; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #e0e0e0; overflow: hidden; }
+
+.header {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 10;
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 28px; background: rgba(10,10,10,0.88);
+  backdrop-filter: blur(16px); border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+.header .brand { font-size: 18px; font-weight: 700; color: #52b788; }
+.header .subtitle { font-size: 11px; color: #666; letter-spacing: 2px; text-transform: uppercase; }
+.stats { display: flex; gap: 24px; }
+.stat-value { font-size: 22px; font-weight: 700; color: #52b788; }
+.stat-label { font-size: 9px; color: #555; text-transform: uppercase; letter-spacing: 1px; }
+.btn { padding: 6px 16px; border-radius: 20px; border: 1px solid #333; background: transparent; color: #888; font-size: 12px; cursor: pointer; transition: all 0.2s; }
+.btn:hover { border-color: #52b788; color: #52b788; }
+
+/* Legend */
+.legend {
+  position: fixed; bottom: 20px; left: 20px; z-index: 10;
+  background: rgba(20,20,20,0.9); border-radius: 12px; padding: 14px 18px;
+  backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.06);
+}
+.legend-title { font-size: 10px; color: #555; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+.legend-item { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; font-size: 12px; color: #999; }
+.legend-line { width: 24px; height: 2px; border-radius: 1px; }
+.line-temporal { background: rgba(82,183,136,0.3); }
+.line-tag { background: rgba(82,183,136,0.6); }
+.line-co { background: #52b788; }
+
+/* Tooltip */
+.tooltip {
+  position: fixed; padding: 14px 18px; background: rgba(20,20,20,0.95);
+  border-radius: 10px; border: 1px solid rgba(82,183,136,0.2);
+  pointer-events: none; opacity: 0; transition: opacity 0.15s; z-index: 20;
+  max-width: 280px; line-height: 1.6; backdrop-filter: blur(12px);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+}
+.tooltip.visible { opacity: 1; }
+.tooltip .t-title { font-weight: 700; font-size: 14px; color: #52b788; margin-bottom: 4px; }
+.tooltip .t-date { font-size: 11px; color: #666; margin-bottom: 6px; }
+.tooltip .t-snippet { font-size: 12px; color: #aaa; }
+.tooltip .t-tags { margin-top: 6px; display: flex; gap: 4px; flex-wrap: wrap; }
+.tooltip .t-tag { font-size: 10px; padding: 2px 6px; background: rgba(82,183,136,0.15); color: #52b788; border-radius: 4px; }
+
+svg { width: 100vw; height: 100vh; }
+
+.loading {
+  position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%);
+  text-align: center; color: #555;
+}
+.spinner { width: 36px; height: 36px; border: 3px solid #222; border-top-color: #52b788;
+  border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 14px; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div>
+    <div class="brand">atelier</div>
+    <div class="subtitle">Journey Map — 你的思想轨迹</div>
+  </div>
+  <div class="stats">
+    <div><div class="stat-value" id="s-notes">—</div><div class="stat-label">Notes</div></div>
+    <div><div class="stat-value" id="s-links">—</div><div class="stat-label">Links</div></div>
+    <div><div class="stat-value" id="s-tags">—</div><div class="stat-label">Tags</div></div>
+  </div>
+  <div style="display:flex;gap:8px">
+    <button class="btn" onclick="toggleLayout()">Toggle Layout</button>
+    <button class="btn" onclick="loadData()">Refresh</button>
+  </div>
+</div>
+
+<div class="legend">
+  <div class="legend-title">Connections</div>
+  <div class="legend-item"><div class="legend-line line-temporal"></div>Time flow</div>
+  <div class="legend-item"><div class="legend-line line-tag"></div>Shared tag</div>
+  <div class="legend-item"><div class="legend-line line-co"></div>Deep overlap</div>
+</div>
+
+<div class="tooltip" id="tooltip"></div>
+
+<div class="loading" id="loading">
+  <div class="spinner"></div>
+  <div>Mapping your journey...</div>
+</div>
+
+<div id="error" style="display:none"></div>
+<div id="login-panel" style="display:none"></div>
+
+<svg id="graph"></svg>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+const API = window.location.origin;
+let headers = {};
+
+// Auth: try URL token first, then localStorage
+async function initAuth() {
+  const urlToken = new URLSearchParams(location.search).get('token')
+    || decodeURIComponent(location.hash.slice(1));
+  if (urlToken) {
+    headers = { 'Authorization': `Bearer ${urlToken}` };
+    localStorage.setItem('atelier_token', urlToken);
+    return true;
+  }
+  const saved = localStorage.getItem('atelier_token');
+  if (saved) {
+    headers = { 'Authorization': `Bearer ${saved}` };
+    // Verify token
+    try {
+      const r = await fetch(`${API}/mind/journey`, {headers});
+      if (r.ok) return true;
+    } catch(e) {}
+    localStorage.removeItem('atelier_token');
+  }
+  return false;
+}
+
+async function login(email, password) {
+  const r = await fetch(`${API}/auth/login`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({email, password})
+  });
+  if (!r.ok) throw new Error('Login failed');
+  const data = await r.json();
+  headers = { 'Authorization': `Bearer ${data.access_token}` };
+  localStorage.setItem('atelier_token', data.access_token);
+}
+
+let useTimeline = false;
+let journeyData = null;
+
+function toggleLayout() {
+  useTimeline = !useTimeline;
+  if (journeyData) renderGraph(journeyData);
+}
+
+async function loadData() {
+  document.getElementById('loading').style.display = '';
+  document.getElementById('login-panel').style.display = 'none';
+  document.getElementById('error').style.display = 'none';
+  try {
+    const res = await fetch(`${API}/mind/journey`, { headers });
+    if (res.status === 401) {
+      localStorage.removeItem('atelier_token');
+      document.getElementById('loading').style.display = 'none';
+      showLogin();
+      return;
+    }
+    if (!res.ok) throw new Error(`API ${res.status}`);
+    journeyData = await res.json();
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('s-notes').textContent = journeyData.nodes.length;
+    document.getElementById('s-links').textContent = journeyData.edges.length;
+    document.getElementById('s-tags').textContent = journeyData.tags.length;
+    renderGraph(journeyData);
+  } catch (e) {
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('error').style.display = '';
+    document.getElementById('error').innerHTML = `Failed: ${e.message}`;
+  }
+}
+
+function showLogin() {
+  const panel = document.getElementById('login-panel');
+  panel.style.display = '';
+  panel.innerHTML = `
+    <div style="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center">
+      <div style="font-size:16px;color:#52b788;margin-bottom:16px">atelier Journey Map</div>
+      <input id="login-email" type="email" placeholder="Email" value="ai@test.com"
+        style="display:block;margin:8px auto;padding:8px 12px;border-radius:8px;border:1px solid #333;background:#1a1a1a;color:#eee;width:240px">
+      <input id="login-pw" type="password" placeholder="Password" value="test1234"
+        style="display:block;margin:8px auto;padding:8px 12px;border-radius:8px;border:1px solid #333;background:#1a1a1a;color:#eee;width:240px">
+      <button onclick="doLogin()" style="margin-top:12px;padding:8px 24px;border-radius:20px;border:1px solid #52b788;background:#52b788;color:#000;cursor:pointer;font-weight:600">Sign In</button>
+      <div id="login-err" style="color:#e74c3c;margin-top:8px;font-size:12px"></div>
+    </div>`;
+}
+
+async function doLogin() {
+  const email = document.getElementById('login-email').value;
+  const pw = document.getElementById('login-pw').value;
+  try {
+    await login(email, pw);
+    loadData();
+  } catch(e) {
+    document.getElementById('login-err').textContent = e.message;
+  }
+}
+
+// Init
+initAuth().then(ok => { if (ok) loadData(); else showLogin(); });
+
+function timeColor(index, total) {
+  // Gradient from cool blue to warm green to gold over time
+  const t = total > 1 ? index / (total - 1) : 0;
+  const colors = [
+    [100, 140, 200],  // blue
+    [82, 183, 136],   // green
+    [220, 180, 80],   // gold
+  ];
+  const seg = t * (colors.length - 1);
+  const i = Math.min(Math.floor(seg), colors.length - 2);
+  const f = seg - i;
+  const r = Math.round(colors[i][0] + (colors[i+1][0] - colors[i][0]) * f);
+  const g = Math.round(colors[i][1] + (colors[i+1][1] - colors[i][1]) * f);
+  const b = Math.round(colors[i][2] + (colors[i+1][2] - colors[i][2]) * f);
+  return `rgb(${r},${g},${b})`;
+}
+
+function renderGraph(data) {
+  d3.select('#graph').selectAll('*').remove();
+
+  const W = window.innerWidth, H = window.innerHeight;
+  const svg = d3.select('#graph').attr('viewBox', [0, 0, W, H]);
+  const g = svg.append('g');
+  svg.call(d3.zoom().scaleExtent([0.15, 6]).on('zoom', ({transform}) => g.attr('transform', transform)));
+
+  const nodes = data.nodes.map(n => ({...n}));
+  const nodeMap = {};
+  nodes.forEach(n => nodeMap[n.id] = n);
+
+  const links = data.edges.map(e => ({...e}));
+
+  // Compute sizes
+  const total = nodes.length;
+
+  if (useTimeline) {
+    // Timeline layout: spread horizontally by time
+    const padding = 120;
+    nodes.forEach((n, i) => {
+      n.x = padding + (W - padding * 2) * (total > 1 ? i / (total - 1) : 0.5);
+      n.y = H / 2 + (Math.sin(i * 0.8) * 60);
+      n.fx = n.x; n.fy = n.y;
+    });
+  }
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link', d3.forceLink(links).id(d => d.id)
+      .distance(d => d.type === 'temporal' ? 60 : d.type === 'shared_tag' ? 100 : 140)
+      .strength(d => d.type === 'temporal' ? 0.4 : d.type === 'shared_tag' ? 0.2 : 0.15))
+    .force('charge', d3.forceManyBody().strength(-180))
+    .force('center', d3.forceCenter(W / 2, H / 2))
+    .force('collision', d3.forceCollide().radius(d => 22))
+    .alpha(useTimeline ? 0.1 : 1);
+
+  // Defs for glow
+  const defs = svg.append('defs');
+  const glow = defs.append('filter').attr('id', 'glow');
+  glow.append('feGaussianBlur').attr('stdDeviation', '3').attr('result', 'blur');
+  const merge = glow.append('feMerge');
+  merge.append('feMergeNode').attr('in', 'blur');
+  merge.append('feMergeNode').attr('in', 'SourceGraphic');
+
+  // Links
+  const link = g.append('g').selectAll('line')
+    .data(links).join('line')
+    .attr('stroke', d => d.type === 'temporal' ? 'rgba(82,183,136,0.15)' : d.type === 'shared_tag' ? 'rgba(82,183,136,0.3)' : 'rgba(82,183,136,0.55)')
+    .attr('stroke-width', d => d.type === 'temporal' ? 1 : d.type === 'shared_tag' ? 1.5 : 2.5)
+    .attr('stroke-dasharray', d => d.type === 'temporal' ? '4 4' : 'none');
+
+  // Nodes
+  const node = g.append('g').selectAll('g')
+    .data(nodes).join('g')
+    .style('cursor', 'pointer')
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag', (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end', (e, d) => { if (!e.active) sim.alphaTarget(0); if (!useTimeline) { d.fx = null; d.fy = null; } }));
+
+  // Outer glow
+  node.append('circle')
+    .attr('r', d => 18)
+    .attr('fill', 'none')
+    .attr('stroke', d => timeColor(d.index, total))
+    .attr('stroke-width', 1.5)
+    .attr('stroke-opacity', 0.3)
+    .attr('filter', 'url(#glow)');
+
+  // Main circle
+  node.append('circle')
+    .attr('r', d => 10)
+    .attr('fill', d => timeColor(d.index, total))
+    .attr('stroke', '#0a0a0a')
+    .attr('stroke-width', 2);
+
+  // Inner dot
+  node.append('circle')
+    .attr('r', 3)
+    .attr('fill', '#0a0a0a')
+    .attr('opacity', 0.4);
+
+  // Label
+  node.append('text')
+    .text(d => d.title.length > 16 ? d.title.slice(0, 15) + '…' : d.title)
+    .attr('dy', -16)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', '10px')
+    .attr('font-weight', '600')
+    .attr('fill', d => timeColor(d.index, total))
+    .attr('opacity', 0.8);
+
+  // Date below
+  node.append('text')
+    .text(d => d.created_at ? d.created_at.slice(5, 10) : '')
+    .attr('dy', 26)
+    .attr('text-anchor', 'middle')
+    .attr('font-size', '8px')
+    .attr('fill', '#555');
+
+  // Hover
+  node.on('mouseenter', (event, d) => {
+    const tip = document.getElementById('tooltip');
+    tip.innerHTML = `
+      <div class="t-title">${d.title}</div>
+      <div class="t-date">${d.created_at ? new Date(d.created_at).toLocaleString('zh') : ''}</div>
+      <div class="t-snippet">${d.snippet || 'No content'}</div>
+      <div class="t-tags">${(d.tags || []).map(t => `<span class="t-tag">#${t}</span>`).join('')}</div>
+    `;
+    tip.classList.add('visible');
+
+    // Highlight
+    const connected = new Set([d.id]);
+    link.each(function(l) {
+      if (l.source.id === d.id || l.target.id === d.id) {
+        connected.add(l.source.id);
+        connected.add(l.target.id);
+      }
+    });
+    node.attr('opacity', n => connected.has(n.id) ? 1 : 0.15);
+    link.attr('stroke-opacity', l => (l.source.id === d.id || l.target.id === d.id) ? 0.8 : 0.03)
+        .attr('stroke-width', l => (l.source.id === d.id || l.target.id === d.id) ? 3 : 1);
+  })
+  .on('mousemove', event => {
+    const tip = document.getElementById('tooltip');
+    tip.style.left = (event.clientX + 16) + 'px';
+    tip.style.top = (event.clientY - 10) + 'px';
+  })
+  .on('mouseleave', () => {
+    document.getElementById('tooltip').classList.remove('visible');
+    node.attr('opacity', 1);
+    link.attr('stroke-opacity', d => d.type === 'temporal' ? 0.15 : d.type === 'shared_tag' ? 0.3 : 0.55)
+        .attr('stroke-width', d => d.type === 'temporal' ? 1 : d.type === 'shared_tag' ? 1.5 : 2.5);
+  });
+
+  // Click → open note in main app
+  node.on('click', (event, d) => {
+    // Just show tooltip content for now
+    event.stopPropagation();
+  });
+
+  sim.on('tick', () => {
+    link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    node.attr('transform', d => `translate(${d.x},${d.y})`);
+  });
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+# Core Framework
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+
+# Database
+sqlalchemy==2.0.41
+greenlet==3.0.3
+aiosqlite==0.21.0
+asyncpg==0.31.0
+psycopg[binary]==3.2.13
+alembic==1.15.2
+
+# Security
+python-jose[cryptography]==3.3.0
+bcrypt==4.2.1
+python-multipart==0.0.20
+pydantic-settings==2.9.1
+email-validator==2.2.0
+
+# Rate Limiting
+slowapi==0.1.9
+
+# Caching
+redis==4.6.0
+fastapi-cache2[redis]==0.2.2
+
+# Monitoring & Logging
+prometheus-fastapi-instrumentator==7.0.0
+structlog==24.4.0
+python-json-logger==3.2.1
+
+# Testing
+pytest==8.3.4
+pytest-asyncio==0.24.0
+pytest-cov==6.0.0
+pytest-mock==3.14.0
+httpx==0.28.1
+faker==33.1.0
+
+# AI
+anthropic>=0.52.0
+
+# ML / NLP
+scikit-learn==1.6.1
+
+# File Handling
+aiofiles==24.1.0
+Pillow==11.2.1
+
+# Deployment
+vercel==0.3.4
+eval_type_backport==0.2.2
+
+# Development
+black==24.10.0
+ruff==0.8.4
+mypy==1.13.0
