@@ -185,6 +185,61 @@ async def _call_openrouter(system: str, user_msg: str) -> dict:
 
     return json.loads(raw)
 
+async def _call_openrouter_stream(system: str, user_msg: str, generation_id: str) -> dict:
+    """Call OpenRouter with streaming, broadcasting chunks via SSE."""
+    from app.intelligence.insights.service import broadcast_log
+
+    collected = ""
+    async with httpx.AsyncClient(timeout=120) as client:
+        async with client.stream(
+            "POST",
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.OPENROUTER_MODEL,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ],
+                "max_tokens": 8000,
+                "temperature": 0.7,
+                "response_format": {"type": "json_object"},
+                "stream": True,
+            },
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    token = delta.get("content", "")
+                    if token:
+                        collected += token
+                        await broadcast_log(generation_id, {
+                            "type": "token",
+                            "token": token,
+                        })
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
+    # Parse collected JSON
+    raw = collected.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
+        if raw.endswith("```"):
+            raw = raw[:-3]
+        raw = raw.strip()
+
+    return json.loads(raw)
+
 # PLACEHOLDER_GENERATE
 
 async def generate_insight_report(db: AsyncSession, generation: InsightGeneration) -> None:
@@ -226,7 +281,7 @@ async def generate_insight_report(db: AsyncSession, generation: InsightGeneratio
 
     await broadcast_log(generation_id, {"type": "progress", "message": "Generating report with AI..."})
 
-    payload = await _call_openrouter(REPORT_SYSTEM_PROMPT, user_prompt)
+    payload = await _call_openrouter_stream(REPORT_SYSTEM_PROMPT, user_prompt, generation_id)
 
     await broadcast_log(generation_id, {"type": "progress", "message": "Saving report..."})
 
