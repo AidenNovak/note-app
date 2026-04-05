@@ -290,3 +290,17 @@ class NoteSimilarity(Base):
     similar_note_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), index=True)
     similarity_score: Mapped[float] = mapped_column(Float)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class MindConnection(Base):
+    """Records a discovered connection between two notes from the mind graph."""
+    __tablename__ = "mind_connections"
+    __table_args__ = (UniqueConstraint("note_a_id", "note_b_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    note_a_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), index=True)
+    note_b_id: Mapped[str] = mapped_column(String(36), ForeignKey("notes.id"), index=True)
+    shared_tags: Mapped[str] = mapped_column(Text, default="[]")  # JSON list of shared tag strings
+    similarity_score: Mapped[float] = mapped_column(Float, default=0.0)
+    connection_type: Mapped[str] = mapped_column(String(32), default="tag_cooccurrence")  # tag_cooccurrence | semantic | hybrid
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

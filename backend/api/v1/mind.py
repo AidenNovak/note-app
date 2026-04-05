@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import HTMLResponse
-from sqlalchemy import select, func
+from sqlalchemy import delete, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import get_db
-from app.models import Note, NoteTag, User
+from app.database import async_session, get_db
+from app.models import MindConnection, Note, NoteTag, NoteSimilarity, User
 from app.schemas import (
     GraphEdgeOut,
     GraphNodeOut,
@@ -676,3 +677,78 @@ async def get_synthesis(
         import logging
         logging.getLogger(__name__).warning("AI synthesis failed: %s", e)
         return []
+
+
+# ── Connection recording ──────────────────────
+
+
+async def _record_connections_background(user_id: str) -> None:
+    """Discover and persist note connections based on shared tags and similarity scores."""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(Note.id).where(Note.user_id == user_id)
+            )
+            note_ids = [r[0] for r in result.all()]
+            if len(note_ids) < 2:
+                return
+
+            tag_result = await db.execute(
+                select(NoteTag.note_id, NoteTag.tag)
+                .where(NoteTag.note_id.in_(note_ids))
+            )
+            note_tags: dict[str, list[str]] = {}
+            for nid, tag in tag_result.all():
+                note_tags.setdefault(nid, []).append(tag)
+
+            sim_result = await db.execute(
+                select(NoteSimilarity)
+                .where(NoteSimilarity.note_id.in_(note_ids))
+            )
+            sim_map: dict[tuple[str, str], float] = {}
+            for s in sim_result.scalars().all():
+                pair = (min(s.note_id, s.similar_note_id), max(s.note_id, s.similar_note_id))
+                sim_map[pair] = max(sim_map.get(pair, 0), s.similarity_score)
+
+            connections: list[dict] = []
+            ids = list(note_tags.keys())
+            for i in range(len(ids)):
+                tags_i = set(note_tags.get(ids[i], []))
+                for j in range(i + 1, len(ids)):
+                    tags_j = set(note_tags.get(ids[j], []))
+                    shared = tags_i & tags_j
+                    pair = (min(ids[i], ids[j]), max(ids[i], ids[j]))
+                    sim = sim_map.get(pair, 0.0)
+                    if not shared and sim < 0.3:
+                        continue
+                    conn_type = "hybrid" if shared and sim > 0.3 else ("tag_cooccurrence" if shared else "semantic")
+                    connections.append({
+                        "note_a_id": pair[0],
+                        "note_b_id": pair[1],
+                        "shared_tags": json.dumps(sorted(shared)),
+                        "similarity_score": round(sim, 4),
+                        "connection_type": conn_type,
+                    })
+
+            if not connections:
+                return
+
+            await db.execute(delete(MindConnection).where(MindConnection.user_id == user_id))
+            for conn in connections[:100]:
+                db.add(MindConnection(id=str(uuid.uuid4()), user_id=user_id, **conn))
+            await db.commit()
+            logger.info("Recorded %d mind connections for user %s", len(connections[:100]), user_id)
+    except Exception:
+        logger.warning("Failed to record mind connections", exc_info=True)
+
+
+@router.post("/connections/refresh")
+async def refresh_connections(
+    background_tasks: BackgroundTasks,
+    current_user: User = Depends(get_current_user),
+):
+    """Trigger background refresh of mind connections."""
+    background_tasks.add_task(_record_connections_background, current_user.id)
+    return {"status": "queued"}
