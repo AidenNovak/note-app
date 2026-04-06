@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.database import get_db
-from app.models import GroundPost, GroundPostLike, InsightReport, Note, NoteLike, SharedNote, User
+from app.models import GroundPost, GroundPostLike, InsightReport, Note, NoteLike, NoteTag, SharedNote, User
 from app.schemas import GroundFeedItem, GroundPostOut, PublicUserOut
 from app.auth.utils import get_current_user
 
@@ -68,7 +68,7 @@ async def share_note(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Share a note to Ground feed."""
+    """Share a note to Ground feed via the unified posts system."""
     result = await db.execute(
         select(Note).where(Note.id == note_id, Note.user_id == current_user.id)
     )
@@ -76,16 +76,25 @@ async def share_note(
     if not note:
         raise HTTPException(status_code=404, detail={"error": {"code": "NOTE_NOT_FOUND", "message": "Note not found"}})
 
-    # Check if already shared
-    existing = await db.execute(select(SharedNote).where(SharedNote.note_id == note_id))
-    sn = existing.scalar_one_or_none()
-    if not sn:
-        sn = SharedNote(id=str(uuid.uuid4()), note_id=note_id, user_id=current_user.id)
-        db.add(sn)
-        await db.commit()
-        await db.refresh(sn)
+    # Check if already shared as a ground post
+    existing = await db.execute(
+        select(GroundPost).where(GroundPost.ref_id == note_id, GroundPost.post_type == "note", GroundPost.user_id == current_user.id)
+    )
+    if existing.scalar_one_or_none():
+        return {"note_id": note_id, "shared": True}
 
-    return {"note_id": note_id, "shared": True, "shared_at": sn.shared_at.isoformat()}
+    post = GroundPost(
+        id=str(uuid.uuid4()),
+        user_id=current_user.id,
+        post_type="note",
+        ref_id=note_id,
+        title=note.title or "Untitled Note",
+        preview=(note.markdown_content or "")[:200],
+    )
+    db.add(post)
+    await db.commit()
+
+    return {"note_id": note_id, "shared": True}
 
 
 @router.post("/notes/{note_id}/like")
@@ -176,6 +185,56 @@ async def get_posts(
         )
         for p in posts
     ]
+
+
+@router.get("/posts/{post_id}")
+async def get_post(
+    post_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    result = await db.execute(
+        select(GroundPost)
+        .options(selectinload(GroundPost.user), selectinload(GroundPost.post_likes))
+        .where(GroundPost.id == post_id)
+    )
+    p = result.scalar_one_or_none()
+    if not p:
+        raise HTTPException(status_code=404, detail="Post not found")
+
+    # Fetch referenced content
+    content = None
+    tags = []
+    if p.post_type == "note" and p.ref_id:
+        note_result = await db.execute(select(Note).where(Note.id == p.ref_id))
+        note = note_result.scalar_one_or_none()
+        if note:
+            content = note.markdown_content
+            tag_result = await db.execute(
+                select(NoteTag.tag).where(NoteTag.note_id == note.id)
+            )
+            tags = [r[0] for r in tag_result.all()]
+    elif p.post_type == "insight" and p.ref_id:
+        report_result = await db.execute(select(InsightReport).where(InsightReport.id == p.ref_id))
+        report = report_result.scalar_one_or_none()
+        if report:
+            content = report.report_markdown
+
+    out = {
+        "id": p.id,
+        "post_type": p.post_type,
+        "ref_id": p.ref_id,
+        "author": {"id": p.user.id, "username": p.user.username},
+        "title": p.title,
+        "preview": p.preview,
+        "extra_json": p.extra_json,
+        "likes": len(p.post_likes),
+        "liked_by_me": any(lk.user_id == current_user.id for lk in p.post_likes),
+        "created_at": p.created_at.isoformat(),
+        "content": content,
+        "tags": tags,
+    }
+    return out
 
 
 @router.post("/posts", response_model=GroundPostOut)
