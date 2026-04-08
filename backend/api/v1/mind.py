@@ -91,133 +91,111 @@ def _build_layout_positions(
     core_tags: list[str],
     layout_seed: int,
 ) -> dict[str, tuple[float, float, float]]:
+    """Position nodes on a sphere surface with the highest-degree node at center.
+
+    - Center node (highest degree) sits at origin (0, 0, 0).
+    - Each cluster gets a base direction on the sphere via golden-angle spiral.
+    - Nodes within a cluster are placed near their cluster's direction with small
+      angular perturbations so similar nodes stay grouped.
+    """
     if not top_tags:
         return {}
 
-    positions: dict[str, list[float]] = {}
-    anchor_positions: dict[str, tuple[float, float]] = {}
+    # Find the center node (highest degree)
+    center_tag = max(
+        (tag for tag, _count in top_tags),
+        key=lambda tag: degrees.get(tag, 0.0),
+        default=top_tags[0][0],
+    )
 
     if not core_tags:
         core_tags = [tag for tag, _count in top_tags[:1]]
 
-    core_radius_x = 170.0
-    core_radius_y = 128.0
-    for index, tag in enumerate(core_tags):
-        angle = (-math.pi / 2) + (index * (2 * math.pi / max(len(core_tags), 1)))
-        x = math.cos(angle) * core_radius_x
-        y = math.sin(angle) * core_radius_y
-        positions[tag] = [x, y]
-        anchor_positions[tag] = (x, y)
+    # Sphere radius scales with node count
+    num_nodes = len(top_tags)
+    sphere_radius = 180.0 + num_nodes * 6.0
 
+    # Assign cluster anchor directions on the sphere using golden-angle spiral
+    golden_angle = math.pi * (3.0 - math.sqrt(5.0))  # ~2.399 radians
+    cluster_anchors: dict[str, tuple[float, float]] = {}  # cluster -> (theta, phi)
+    for index, cluster in enumerate(core_tags):
+        # Distribute clusters evenly on upper hemisphere
+        theta = math.acos(1.0 - (index + 0.5) / max(len(core_tags), 1))
+        phi = golden_angle * index
+        cluster_anchors[cluster] = (theta, phi)
+
+    # Group non-center tags by cluster
     members_by_cluster: dict[str, list[str]] = {cluster: [] for cluster in core_tags}
     for tag, _count in top_tags:
-        cluster = cluster_by_tag.get(tag)
-        if cluster is None or tag in core_tags:
+        if tag == center_tag:
             continue
-        members_by_cluster.setdefault(cluster, []).append(tag)
+        cluster = cluster_by_tag.get(tag)
+        if cluster and cluster in members_by_cluster:
+            members_by_cluster[cluster].append(tag)
+        elif core_tags:
+            # Fallback: assign to first cluster
+            members_by_cluster[core_tags[0]].append(tag)
 
-    core_index = {tag: index for index, tag in enumerate(core_tags)}
-    for cluster, members in members_by_cluster.items():
-        base_angle = (-math.pi / 2) + (core_index.get(cluster, 0) * (2 * math.pi / max(len(core_tags), 1)))
-        sorted_members = sorted(
-            members,
+    # Sort members within each cluster by degree (highest first)
+    for cluster in members_by_cluster:
+        members_by_cluster[cluster].sort(
             key=lambda tag: (-degrees.get(tag, 0.0), tag),
         )
-        for index, tag in enumerate(sorted_members):
-            ring = index // 4
-            slot = index % 4
-            spread = (slot - 1.5) * 0.44
-            orbit = 108 + (ring * 54) + (_stable_ratio(layout_seed, cluster, tag) * 18)
-            angle = base_angle + spread
-            x = anchor_positions[cluster][0] + (math.cos(angle) * orbit)
-            y = anchor_positions[cluster][1] + (math.sin(angle) * orbit)
-            positions[tag] = [x, y]
-            anchor_positions[tag] = (x, y)
 
+    # Place nodes on sphere surface
+    positions: dict[str, tuple[float, float, float]] = {}
+    positions[center_tag] = (0.0, 0.0, 0.0)
+
+    # Place core tags at cluster anchor positions on the sphere
+    for cluster in core_tags:
+        if cluster == center_tag:
+            continue
+        theta, phi = cluster_anchors[cluster]
+        x = sphere_radius * math.sin(theta) * math.cos(phi)
+        y = sphere_radius * math.cos(theta)
+        z = sphere_radius * math.sin(theta) * math.sin(phi)
+        positions[cluster] = (round(x, 2), round(y, 2), round(z, 2))
+
+    # Place satellite nodes near their cluster anchor with small angular offsets
+    for cluster, members in members_by_cluster.items():
+        base_theta, base_phi = cluster_anchors.get(cluster, (math.pi / 2, 0.0))
+        for index, tag in enumerate(members):
+            if tag in positions:
+                continue
+            # Spiral outward from the cluster anchor
+            ring = index // 6
+            slot = index % 6
+            angle_offset = (slot - 2.5) * 0.25  # spread around anchor
+            radius_offset = 0.92 + ring * 0.12  # slightly vary radius per ring
+            jitter_theta = (_stable_ratio(layout_seed, tag, "theta") - 0.5) * 0.15
+            jitter_phi = (_stable_ratio(layout_seed, tag, "phi") - 0.5) * 0.15
+
+            theta = base_theta + angle_offset * 0.4 + jitter_theta
+            phi = base_phi + angle_offset + jitter_phi
+            r = sphere_radius * radius_offset
+
+            # Clamp theta to valid range
+            theta = max(0.1, min(math.pi - 0.1, theta))
+
+            x = r * math.sin(theta) * math.cos(phi)
+            y = r * math.cos(theta)
+            z = r * math.sin(theta) * math.sin(phi)
+            positions[tag] = (round(x, 2), round(y, 2), round(z, 2))
+
+    # Handle any remaining unpositioned tags
     for tag, _count in top_tags:
         if tag in positions:
             continue
         ratio = _stable_ratio(layout_seed, tag)
-        angle = ratio * 2 * math.pi
-        orbit = 220 + (_stable_ratio(tag, layout_seed, "orbit") * 36)
-        x = math.cos(angle) * orbit
-        y = math.sin(angle) * orbit
-        positions[tag] = [x, y]
-        anchor_positions[tag] = (x, y)
+        theta = math.acos(1.0 - 2.0 * ratio)
+        phi = golden_angle * (len(positions) + 1)
+        r = sphere_radius * 1.05
+        x = r * math.sin(theta) * math.cos(phi)
+        y = r * math.cos(theta)
+        z = r * math.sin(theta) * math.sin(phi)
+        positions[tag] = (round(x, 2), round(y, 2), round(z, 2))
 
-    for _ in range(26):
-        forces = {tag: [0.0, 0.0] for tag, _count in top_tags}
-        tag_names = [tag for tag, _count in top_tags]
-
-        for index, tag_a in enumerate(tag_names):
-            pos_a = positions[tag_a]
-            for tag_b in tag_names[index + 1:]:
-                pos_b = positions[tag_b]
-                dx = pos_b[0] - pos_a[0]
-                dy = pos_b[1] - pos_a[1]
-                dist_sq = (dx * dx) + (dy * dy) + 1.0
-                dist = math.sqrt(dist_sq)
-                repulsion = 16500 / dist_sq
-                fx = (dx / dist) * repulsion
-                fy = (dy / dist) * repulsion
-                forces[tag_a][0] -= fx
-                forces[tag_a][1] -= fy
-                forces[tag_b][0] += fx
-                forces[tag_b][1] += fy
-
-        for edge in edge_records:
-            source = edge["source_tag"]
-            target = edge["target_tag"]
-            strength = float(edge["strength"])
-            pos_source = positions[source]
-            pos_target = positions[target]
-            dx = pos_target[0] - pos_source[0]
-            dy = pos_target[1] - pos_source[1]
-            dist = math.sqrt((dx * dx) + (dy * dy)) or 1.0
-            desired = max(88.0, 158.0 - min(strength, 7.0) * 10.0)
-            spring = (dist - desired) * (0.022 + (strength * 0.003))
-            fx = (dx / dist) * spring
-            fy = (dy / dist) * spring
-            forces[source][0] += fx
-            forces[source][1] += fy
-            forces[target][0] -= fx
-            forces[target][1] -= fy
-
-        for tag, _count in top_tags:
-            anchor_x, anchor_y = anchor_positions[tag]
-            pos = positions[tag]
-            forces[tag][0] += (anchor_x - pos[0]) * 0.08
-            forces[tag][1] += (anchor_y - pos[1]) * 0.08
-
-            if tag in core_tags:
-                forces[tag][0] += (0 - pos[0]) * 0.03
-                forces[tag][1] += (0 - pos[1]) * 0.03
-
-        for tag, _count in top_tags:
-            positions[tag][0] += forces[tag][0] * 0.18
-            positions[tag][1] += forces[tag][1] * 0.18
-
-    xs = [coords[0] for coords in positions.values()]
-    ys = [coords[1] for coords in positions.values()]
-    center_x = (min(xs) + max(xs)) / 2 if xs else 0
-    center_y = (min(ys) + max(ys)) / 2 if ys else 0
-
-    # Compute z-axis: core nodes at z≈0, satellites offset by cluster index
-    z_values: dict[str, float] = {}
-    for tag, _count in top_tags:
-        if tag in core_tags:
-            z_values[tag] = 0.0
-        else:
-            cluster = cluster_by_tag.get(tag)
-            cluster_idx = core_tags.index(cluster) if cluster and cluster in core_tags else 0
-            z_base = (cluster_idx - len(core_tags) / 2) * 60.0
-            z_jitter = (_stable_ratio(layout_seed, tag, "z") - 0.5) * 40.0
-            z_values[tag] = round(z_base + z_jitter, 2)
-
-    return {
-        tag: (round(coords[0] - center_x, 2), round(coords[1] - center_y, 2), z_values.get(tag, 0.0))
-        for tag, coords in positions.items()
-    }
+    return positions
 
 
 @router.get("/graph/web", response_class=HTMLResponse)
