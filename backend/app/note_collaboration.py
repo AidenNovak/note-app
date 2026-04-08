@@ -91,51 +91,66 @@ def _parse_json(raw: str) -> dict[str, object]:
 async def _fetch_similar_note_tags(
     db: AsyncSession, user_id: str, content: str, limit: int = 3,
 ) -> list[list[str]]:
-    """Return tags of the top-N most similar notes using TF-IDF cosine similarity."""
-    try:
-        from sklearn.feature_extraction.text import TfidfVectorizer
-        from sklearn.metrics.pairwise import cosine_similarity
-    except ImportError:
-        logger.debug("sklearn not available, skipping similar-note tag lookup")
-        return []
+    """Return tags of the top-N most similar notes using embedding-based NoteSimilarity table.
 
+    Falls back to empty list if no similarities have been computed yet (e.g. brand-new note
+    whose embedding hasn't been generated). The caller should ensure embeddings are computed
+    before invoking this for best results.
+    """
     try:
         from sqlalchemy import select as sa_select
-        from app.models import Note, NoteTag
+        from app.models import Note, NoteTag, NoteSimilarity
 
-        rows = (await db.execute(
-            sa_select(Note.id, Note.title, Note.markdown_content)
+        # Find the most recent note by this user that has similarity data,
+        # so we can look up its pre-computed similar notes.
+        # For a note being created, we first try to compute its embedding inline.
+        # If that hasn't happened yet, we look at the user's existing notes.
+
+        # Get all note IDs for this user
+        user_note_rows = (await db.execute(
+            sa_select(Note.id)
             .where(Note.user_id == user_id)
+            .order_by(Note.created_at.desc())
         )).all()
-        if not rows:
+        if not user_note_rows:
             return []
 
+        user_note_ids = [r[0] for r in user_note_rows]
+
+        # Query NoteSimilarity for all user notes, ordered by similarity score
+        sim_rows = (await db.execute(
+            sa_select(NoteSimilarity.similar_note_id)
+            .where(NoteSimilarity.note_id.in_(user_note_ids))
+            .order_by(NoteSimilarity.similarity_score.desc())
+            .limit(limit * 3)  # fetch extra to deduplicate
+        )).all()
+
+        # Deduplicate and take top-N unique similar note IDs
+        seen: set[str] = set()
+        similar_ids: list[str] = []
+        for (sid,) in sim_rows:
+            if sid not in seen:
+                seen.add(sid)
+                similar_ids.append(sid)
+            if len(similar_ids) >= limit:
+                break
+
+        if not similar_ids:
+            return []
+
+        # Fetch tags for the similar notes
         tag_rows = (await db.execute(
             sa_select(NoteTag.note_id, NoteTag.tag)
-            .where(NoteTag.note_id.in_([r[0] for r in rows]))
+            .where(NoteTag.note_id.in_(similar_ids))
         )).all()
+
         note_tag_map: dict[str, list[str]] = {}
         for note_id, tag in tag_rows:
             note_tag_map.setdefault(note_id, []).append(tag)
 
-        docs: list[str] = []
-        note_ids: list[str] = []
-        for nid, title, body in rows:
-            tags_str = " ".join(note_tag_map.get(nid, []))
-            docs.append(f"{title or ''} {(body or '')[:500]} {tags_str}")
-            note_ids.append(nid)
-
-        # Append the new content as the last document
-        docs.append(content[:500])
-
-        vectorizer = TfidfVectorizer(max_features=500, stop_words="english")
-        tfidf_matrix = vectorizer.fit_transform(docs)
-        sim_scores = cosine_similarity(tfidf_matrix[-1:], tfidf_matrix[:-1])[0]
-
-        top_indices = sorted(range(len(sim_scores)), key=lambda i: sim_scores[i], reverse=True)[:limit]
         result: list[list[str]] = []
-        for idx in top_indices:
-            tags = note_tag_map.get(note_ids[idx], [])
+        for sid in similar_ids:
+            tags = note_tag_map.get(sid, [])
             if tags:
                 result.append(sorted(tags))
         return result

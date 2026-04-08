@@ -54,9 +54,11 @@ Rules:
 - Tags should be short, lowercase when appropriate, and avoid generic filler.
 - If a current title is already strong, you may keep it.
 - You MUST generate exactly 3-5 tags.
-- If "similar_notes_tags" is provided in the input, at least 1 of your tags MUST appear \
-in those existing tags to maintain knowledge graph coherence. Pick the most relevant \
-overlapping tag(s) from the similar notes, then add new tags specific to this note.
+- If "similar_notes_tags" is provided in the input, at least 1-2 of your tags MUST appear \
+in those existing tags to maintain knowledge graph coherence and enable clustering. \
+Compare the current note with the similar notes' tags, pick the most relevant \
+overlapping tag(s), then add new tags specific to this note. \
+The goal is to ensure different notes share some common tags for graph connectivity.
 """
 
 NOTE_REWRITE_PROMPT = """\
