@@ -19,6 +19,7 @@ from app.models import InsightGeneration, InsightReport, TaskStatus, User
 from app.schemas import InsightDetailOut, InsightGenerationOut, InsightOut
 from app.intelligence.insights.service import (
     build_report_detail,
+    broadcast_log,
     create_generation,
     get_latest_generation,
     get_report,
@@ -181,6 +182,82 @@ async def generate_insights_direct(
     generation, created = await create_generation(db, current_user.id)
     if created:
         background_tasks.add_task(_background_generate_direct, generation.id)
+    return serialize_generation(generation)
+
+
+# ── Workspace Agent generation ──────────────────────
+
+
+async def _background_generate_agent(generation_id: str) -> None:
+    """Run workspace agent in its own db session."""
+    from app.intelligence.insights.workspace_agent import run_workspace_agent
+
+    async with async_session() as db:
+        generation = await db.get(InsightGeneration, generation_id)
+        if generation is None:
+            return
+        generation.status = TaskStatus.PROCESSING
+        generation.workflow_version = "workspace-agent-v1"
+        await db.commit()
+        try:
+            await run_workspace_agent(db, generation)
+        except Exception as exc:
+            logger.exception("Workspace agent generation failed for %s", generation_id)
+            generation.status = TaskStatus.FAILED
+            generation.error = str(exc)[:500]
+            generation.is_active = False
+            await db.commit()
+            await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
+
+
+@router.post("/generate/agent", response_model=InsightGenerationOut, status_code=status.HTTP_202_ACCEPTED)
+async def generate_insights_agent(
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate insights via workspace agent. Returns generation ID, stream via GET."""
+    generation, created = await create_generation(db, current_user.id)
+    if created:
+        background_tasks.add_task(_background_generate_agent, generation.id)
+    return serialize_generation(generation)
+
+
+# ── Multi-Agent generation ──────────────────────
+
+
+async def _background_generate_multi_agent(generation_id: str) -> None:
+    """Run multi-agent orchestrator in its own db session."""
+    from app.intelligence.insights.multi_agent import run_multi_agent
+
+    async with async_session() as db:
+        generation = await db.get(InsightGeneration, generation_id)
+        if generation is None:
+            return
+        generation.status = TaskStatus.PROCESSING
+        generation.workflow_version = "multi-agent-v1"
+        await db.commit()
+        try:
+            await run_multi_agent(db, generation)
+        except Exception as exc:
+            logger.exception("Multi-agent generation failed for %s", generation_id)
+            generation.status = TaskStatus.FAILED
+            generation.error = str(exc)[:500]
+            generation.is_active = False
+            await db.commit()
+            await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
+
+
+@router.post("/generate/multi-agent", response_model=InsightGenerationOut, status_code=status.HTTP_202_ACCEPTED)
+async def generate_insights_multi_agent(
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Generate insights via multi-agent orchestrator. s0 groups notes, sN sub-agents generate."""
+    generation, created = await create_generation(db, current_user.id)
+    if created:
+        background_tasks.add_task(_background_generate_multi_agent, generation.id)
     return serialize_generation(generation)
 
 
