@@ -46,19 +46,18 @@ You are helping maintain a collaborative knowledge note.
 
 Return ONLY a JSON object with these exact fields:
 - "title": a concise note title under 80 characters
-- "tags": an array of 3-5 short tags
+- "tags": an array of tags
 
 Rules:
 - Use the user's language.
 - The title should be specific and calm, not clickbait.
 - Tags should be short, lowercase when appropriate, and avoid generic filler.
 - If a current title is already strong, you may keep it.
-- You MUST generate exactly 3-5 tags.
-- If "similar_notes_tags" is provided in the input, at least 1-2 of your tags MUST appear \
-in those existing tags to maintain knowledge graph coherence and enable clustering. \
-Compare the current note with the similar notes' tags, pick the most relevant \
-overlapping tag(s), then add new tags specific to this note. \
-The goal is to ensure different notes share some common tags for graph connectivity.
+- If "anchor_tag" is provided, that tag is already confirmed. Generate 2-4 additional \
+complementary tags (do NOT repeat the anchor_tag). Total tags in your response: 2-4.
+- If no "anchor_tag" is provided, generate 3-5 tags freely.
+- If "similar_notes_tags" is provided, use them as reference for style and vocabulary, \
+but you are not required to reuse them.
 """
 
 NOTE_REWRITE_PROMPT = """\

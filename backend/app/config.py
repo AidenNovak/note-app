@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     AI_PROVIDER: str = "claude-sdk"  # claude-sdk | openrouter
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_MODEL: str = "minimax/minimax-m2.7"
+    ANTHROPIC_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""
     AI_MAX_TOKENS: int = 1000
     AI_TEMPERATURE: float = 0.7
 
@@ -95,6 +97,12 @@ class Settings(BaseSettings):
     INSIGHT_MAX_CONTEXT_NOTES: int = 12
     INSIGHT_MAX_NOTE_CHARS: int = 4000
     INSIGHT_AGENT_MAX_TURNS: int = 30
+
+    # Workspace Agent
+    AGENT_MODEL: str = "anthropic/claude-sonnet-4"
+    AGENT_MAX_TURNS: int = 25
+    AGENT_MAX_TOKENS_PER_TURN: int = 4096
+    AGENT_REQUEST_TIMEOUT: int = 180
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

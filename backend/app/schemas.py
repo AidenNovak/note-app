@@ -49,7 +49,9 @@ class FileOut(BaseModel):
     filename: str
     mime_type: str
     size: int
+    category: str
     url: str
+    note_id: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -77,6 +79,9 @@ class AttachmentOut(BaseModel):
     type: str
     url: str
     filename: str
+    mime_type: str
+    size: int
+    category: str
 
 
 class NoteOut(BaseModel):
@@ -87,6 +92,8 @@ class NoteOut(BaseModel):
     folder_id: str | None
     tags: list[str]
     tag_source: str
+    source_type: str | None = None
+    attachment_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -106,6 +113,28 @@ class NoteListResponse(BaseModel):
     page: int
     page_size: int
     items: list[NoteOut]
+
+
+class FileReferenceNoteOut(BaseModel):
+    id: str
+    title: str
+    updated_at: datetime
+
+
+class FileDetail(FileOut):
+    references: list[FileReferenceNoteOut] = Field(default_factory=list)
+
+
+class FileListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[FileOut]
+
+
+class FileReferenceListResponse(BaseModel):
+    file_id: str
+    references: list[FileReferenceNoteOut]
 
 
 # ── Tasks ──────────────────────────────────────────────

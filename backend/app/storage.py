@@ -26,6 +26,21 @@ class StoredFile:
     size: int
 
 
+def categorize_mime_type(mime_type: str | None) -> str:
+    normalized = (mime_type or "").lower()
+    if normalized.startswith("image/"):
+        return "image"
+    if normalized.startswith("audio/"):
+        return "audio"
+    if normalized.startswith("video/"):
+        return "video"
+    if normalized.startswith("text/"):
+        return "document"
+    if normalized.startswith("application/") and normalized != "application/octet-stream":
+        return "document"
+    return "other"
+
+
 def build_storage_key(user_id: str, note_id: str | None, file_id: str, filename: str | None) -> str:
     ext = Path(filename or "unknown").suffix
     note_segment = note_id or "unattached"

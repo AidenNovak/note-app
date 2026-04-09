@@ -78,42 +78,18 @@ async def create_generation(db: AsyncSession, user_id: str) -> tuple[InsightGene
 
 
 async def list_reports(db: AsyncSession, user_id: str) -> list[InsightReport]:
-    active_generation = await db.execute(
-        select(InsightGeneration.id)
-        .where(
-            InsightGeneration.user_id == user_id,
-            InsightGeneration.is_active.is_(True),
-        )
-        .limit(1)
-    )
-    target_generation_id = active_generation.scalar_one_or_none()
-
-    if target_generation_id is None:
-        latest_completed = await db.execute(
-            select(InsightGeneration.id)
-            .where(
-                InsightGeneration.user_id == user_id,
-                InsightGeneration.status == TaskStatus.COMPLETED,
-            )
-            .order_by(InsightGeneration.completed_at.desc(), InsightGeneration.created_at.desc())
-            .limit(1)
-        )
-        target_generation_id = latest_completed.scalar_one_or_none()
-
-    if target_generation_id is None:
-        return []
-
     result = await db.execute(
         select(InsightReport)
         .options(
             selectinload(InsightReport.evidence_items),
             selectinload(InsightReport.action_items),
         )
+        .join(InsightGeneration, InsightReport.generation_id == InsightGeneration.id)
         .where(
             InsightReport.user_id == user_id,
-            InsightReport.generation_id == target_generation_id,
+            InsightGeneration.status == TaskStatus.COMPLETED,
         )
-        .order_by(InsightReport.card_rank.asc(), InsightReport.generated_at.desc())
+        .order_by(InsightReport.generated_at.desc())
     )
     return list(result.scalars().all())
 
@@ -135,10 +111,14 @@ async def get_report(db: AsyncSession, user_id: str, report_id: str) -> InsightR
 
 
 _log_queues: dict[str, list[asyncio.Queue]] = defaultdict(list)
+_event_buffers: dict[str, list[dict]] = defaultdict(list)
 
 
 def subscribe_to_generation(generation_id: str) -> asyncio.Queue:
-    queue = asyncio.Queue()
+    queue: asyncio.Queue = asyncio.Queue()
+    # Replay buffered events so late subscribers don't miss anything
+    for event in _event_buffers.get(generation_id, []):
+        queue.put_nowait(event)
     _log_queues[generation_id].append(queue)
     return queue
 
@@ -153,9 +133,13 @@ def unsubscribe_from_generation(generation_id: str, queue: asyncio.Queue) -> Non
 
 
 async def broadcast_log(generation_id: str, event: dict[str, object]) -> None:
-    if generation_id not in _log_queues:
-        return
-    for queue in _log_queues[generation_id]:
+    # Buffer non-token events for late subscribers (tokens are too many to buffer)
+    if event.get("type") != "token":
+        _event_buffers[generation_id].append(event)
+    # Clean up buffer on terminal events
+    if event.get("type") in ("completed", "error"):
+        _event_buffers.pop(generation_id, None)
+    for queue in _log_queues.get(generation_id, []):
         await queue.put(event)
 
 

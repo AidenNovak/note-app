@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 
 import httpx
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File as FormFile, Form, HTTPException, Query, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -35,30 +35,33 @@ router = APIRouter(prefix="/notes", tags=["tasks"])
 
 # ── Create note (with file or text) ─────────────────────
 
-@router.post("", response_model=NoteOut, status_code=201)
+@router.post("/upload", response_model=NoteOut, status_code=201)
 async def create_note(
     background_tasks: BackgroundTasks,
     title: str | None = Form(None),
     folder_id: str | None = Form(None),
     tags: str | None = Form(None),  # comma-separated
     content: str | None = Form(None),
-    file: UploadFile | None = None,
+    file: UploadFile | None = FormFile(None),
+    files: list[UploadFile] | None = FormFile(None),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not content and not file:
+    uploads = [upload for upload in [file, *(files or [])] if upload is not None]
+    if not content and not uploads:
         raise HTTPException(status_code=400, detail={"error": {"code": "MISSING_CONTENT", "message": "Provide 'content' or 'file'"}})
 
     note_id = str(uuid.uuid4())
-    needs_processing = file is not None
+    needs_processing = len(uploads) > 0
     source_file_id = None
     source_type = SourceType.TEXT
     task_type = TaskType.TEXT_TO_MARKDOWN
+    saved_files: list[File] = []
 
-    if file:
-        # save file
+    if uploads:
         try:
-            file_record = await _save_file(file, current_user.id, note_id, db)
+            for upload in uploads:
+                saved_files.append(await _save_file(upload, current_user.id, note_id, db))
         except FileTooLargeError as exc:
             raise HTTPException(
                 status_code=400,
@@ -74,12 +77,17 @@ async def create_note(
                 status_code=503,
                 detail={"error": {"code": "STORAGE_UNAVAILABLE", "message": str(exc)}},
             ) from exc
+
+        file_record = saved_files[0]
         source_file_id = file_record.id
         mime = file_record.mime_type
 
         if mime.startswith("audio/"):
             source_type = SourceType.VOICE
             task_type = TaskType.VOICE_TO_TEXT
+        elif mime.startswith("image/"):
+            source_type = SourceType.IMAGE
+            task_type = TaskType.IMAGE_TO_MARKDOWN
         elif mime.startswith("video/"):
             source_type = SourceType.VIDEO
             task_type = TaskType.VIDEO_TO_FRAMES
@@ -101,7 +109,7 @@ async def create_note(
         note_content = resolved.markdown_content
         initial_origin = VersionOrigin.HUMAN
     else:
-        note_title = title or (file.filename if file else "Untitled Note")
+        note_title = title or (uploads[0].filename if uploads else "Untitled Note")
         title_source = MetadataSource.HUMAN if title and title.strip() else MetadataSource.SYSTEM
         tag_values = normalize_tags(explicit_tags)
         tag_source = MetadataSource.HUMAN if tag_values else MetadataSource.NONE
@@ -159,6 +167,8 @@ async def create_note(
         id=note_id, title=note_title, title_source=title_source.value,
         status=(TaskStatus.PENDING if needs_processing else TaskStatus.COMPLETED).value,
         folder_id=folder_id, tags=note_tags, tag_source=tag_source.value,
+        source_type=source_type.value if source_type else None,
+        attachment_count=len(saved_files),
         created_at=note.created_at, updated_at=note.updated_at,
     )
 
@@ -247,9 +257,16 @@ async def retry_task(
     if not task:
         raise HTTPException(status_code=404, detail={"error": {"code": "TASK_NOT_FOUND", "message": "Task not found"}})
 
+    note_result = await db.execute(select(Note).where(Note.id == task.note_id, Note.user_id == current_user.id))
+    note = note_result.scalar_one_or_none()
+    if not note:
+        raise HTTPException(status_code=404, detail={"error": {"code": "NOTE_NOT_FOUND", "message": "Note not found"}})
+
     task.status = TaskStatus.PENDING
     task.progress = 0.0
     task.error = None
+    task.completed_at = None
+    note.status = TaskStatus.PENDING
     await db.commit()
 
     background_tasks.add_task(_process_note, task.id, task.note_id, None, task.input_file_id, task.type)
@@ -311,38 +328,42 @@ async def _save_file(upload: UploadFile, user_id: str, note_id: str, db: AsyncSe
 
 
 async def _process_note(task_id: str, note_id: str, content: str | None, file_id: str | None, task_type: TaskType):
-    """Background task: simulate AI processing pipeline.
-
-    In production, this calls external AI APIs (Claude, Whisper, etc.)
-    """
-    import asyncio
+    """Background task: process uploaded files via AI APIs (Whisper, Vision, file extraction)."""
     from app.database import async_session
 
     async with async_session() as db:
-        # mark processing
+        note: Note | None = None
         result = await db.execute(select(ProcessingTask).where(ProcessingTask.id == task_id))
         task = result.scalar_one_or_none()
         if not task:
             return
-        task.status = TaskStatus.PROCESSING
-        task.progress = 0.1
-        await db.commit()
 
         try:
-            # TODO: replace with actual AI API calls
-            # Simulate processing with a short delay
-            await asyncio.sleep(2)
-
-            # generate placeholder markdown
             note_result = await db.execute(select(Note).options(selectinload(Note.tags)).where(Note.id == note_id))
             note = note_result.scalar_one_or_none()
             if not note:
+                task.status = TaskStatus.FAILED
+                task.error = "Note not found"
+                await db.commit()
                 return
 
-            if content:
+            task.status = TaskStatus.PROCESSING
+            task.progress = 0.1
+            note.status = TaskStatus.PROCESSING
+            await db.commit()
+
+            markdown = ""
+
+            if task_type == TaskType.VOICE_TO_TEXT:
+                markdown = await _voice_to_text(file_id, db)
+            elif task_type == TaskType.IMAGE_TO_MARKDOWN:
+                markdown = await _image_to_markdown(file_id, db)
+            elif task_type == TaskType.FILE_TO_MARKDOWN:
+                markdown = await _file_to_markdown(file_id, db)
+            elif content:
                 markdown = f"# {note.title}\n\n{content}\n"
             else:
-                markdown = f"# {note.title}\n\n> AI 处理完成（{task_type.value}）\n\n内容已转换为 Markdown 格式。\n"
+                markdown = f"# {note.title}\n\n> Processed ({task_type.value})\n"
 
             task.progress = 0.9
             await db.commit()
@@ -364,7 +385,7 @@ async def _process_note(task_id: str, note_id: str, content: str | None, file_id
                 tags_json=dumps_tags(resolved.tags),
                 tag_source=resolved.tag_source,
                 markdown_content=resolved.markdown_content,
-                summary=f"AI 转换完成（{task_type.value}）",
+                summary=f"AI processing complete ({task_type.value})",
             ))
 
             note.title = resolved.title
@@ -385,4 +406,152 @@ async def _process_note(task_id: str, note_id: str, content: str | None, file_id
         except Exception as e:
             task.status = TaskStatus.FAILED
             task.error = str(e)
+            if note is not None:
+                note.status = TaskStatus.FAILED
             await db.commit()
+
+
+async def _voice_to_text(file_id: str | None, db: AsyncSession) -> str:
+    """Transcribe audio via OpenAI Whisper API."""
+    if not file_id:
+        return "> No audio file provided.\n"
+
+    file_result = await db.execute(select(File).where(File.id == file_id))
+    file_record = file_result.scalar_one_or_none()
+    if not file_record:
+        return "> Audio file not found.\n"
+
+    storage_url = _get_file_url(file_record.storage_path)
+
+    openai_key = os.environ.get("OPENAI_API_KEY", settings.OPENAI_API_KEY)
+    if not openai_key:
+        return f"> [Audio transcription pending — no OPENAI_API_KEY configured]\n> File: {file_record.filename}\n"
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        file_resp = await client.get(storage_url)
+        if file_resp.status_code >= 400:
+            return "> Could not download audio file for transcription.\n"
+
+    import openai
+    oai = openai.AsyncOpenAI(api_key=openai_key)
+    import io
+    audio_file = io.BytesIO(file_resp.content)
+    audio_file.name = file_record.filename
+
+    transcription = await oai.audio.transcriptions.create(
+        model="whisper-1",
+        file=audio_file,
+    )
+
+    text = transcription.text
+    return f"# Voice Note\n\n{text}\n" if text else "> Empty transcription result.\n"
+
+
+async def _image_to_markdown(file_id: str | None, db: AsyncSession) -> str:
+    """Describe image content via Claude Vision."""
+    if not file_id:
+        return "> No image file provided.\n"
+
+    file_result = await db.execute(select(File).where(File.id == file_id))
+    file_record = file_result.scalar_one_or_none()
+    if not file_record:
+        return "> Image file not found.\n"
+
+    storage_url = _get_file_url(file_record.storage_path)
+
+    import anthropic
+    api_key = os.environ.get("ANTHROPIC_API_KEY", settings.ANTHROPIC_API_KEY)
+    if not api_key:
+        return f"> [Image description pending — no API key configured]\n> File: {file_record.filename}\n"
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        img_resp = await client.get(storage_url)
+        if img_resp.status_code >= 400:
+            return f"> Could not download image for analysis.\n"
+
+    import base64
+    image_data = base64.b64encode(img_resp.content).decode("utf-8")
+    media_type = file_record.mime_type if file_record.mime_type.startswith("image/") else "image/jpeg"
+
+    aclient = anthropic.AsyncAnthropic(api_key=api_key)
+    message = await aclient.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1024,
+        messages=[{
+            "role": "user",
+            "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_data}},
+                {"type": "text", "text": "Describe this image in detail. Write the description as clean markdown suitable for a note. Include any text visible in the image."},
+            ],
+        }],
+    )
+
+    description = message.content[0].text if message.content else ""
+    return f"# Image Note\n\n{description}\n"
+
+
+async def _file_to_markdown(file_id: str | None, db: AsyncSession) -> str:
+    """Extract text from PDF/DOCX or describe via Claude."""
+    if not file_id:
+        return "> No file provided.\n"
+
+    file_result = await db.execute(select(File).where(File.id == file_id))
+    file_record = file_result.scalar_one_or_none()
+    if not file_record:
+        return "> File not found.\n"
+
+    storage_url = _get_file_url(file_record.storage_path)
+
+    async with httpx.AsyncClient(timeout=60.0) as client:
+        file_resp = await client.get(storage_url)
+        if file_resp.status_code >= 400:
+            return f"> Could not download file for extraction.\n"
+
+    file_bytes = file_resp.content
+    mime = file_record.mime_type
+
+    if mime == "application/pdf":
+        return _extract_pdf(file_bytes, file_record.filename)
+    elif mime in ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "application/msword"):
+        return _extract_docx(file_bytes, file_record.filename)
+    else:
+        return f"# {file_record.filename}\n\n> File type `{mime}` — content extraction not yet supported.\n"
+
+
+def _extract_pdf(data: bytes, filename: str) -> str:
+    """Extract text from PDF using pdfplumber."""
+    try:
+        import io
+        import pdfplumber
+        pages_text = []
+        with pdfplumber.open(io.BytesIO(data)) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if text:
+                    pages_text.append(text)
+        if pages_text:
+            return f"# {filename}\n\n" + "\n\n---\n\n".join(pages_text) + "\n"
+        return f"# {filename}\n\n> PDF contained no extractable text.\n"
+    except Exception as e:
+        return f"# {filename}\n\n> PDF extraction failed: {e}\n"
+
+
+def _extract_docx(data: bytes, filename: str) -> str:
+    """Extract text from DOCX using python-docx."""
+    try:
+        import io
+        import docx
+        doc = docx.Document(io.BytesIO(data))
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+        if paragraphs:
+            return f"# {filename}\n\n" + "\n\n".join(paragraphs) + "\n"
+        return f"# {filename}\n\n> Document contained no text.\n"
+    except Exception as e:
+        return f"# {filename}\n\n> DOCX extraction failed: {e}\n"
+
+
+def _get_file_url(storage_path: str) -> str:
+    """Build a public URL for a stored file."""
+    if not settings.EASYSTARTER_SERVER_URL:
+        return ""
+    return f"{settings.EASYSTARTER_SERVER_URL.rstrip('/')}/api/storage/{storage_path}"

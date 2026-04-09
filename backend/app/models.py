@@ -27,6 +27,7 @@ class TaskType(str, enum.Enum):
     VOICE_TO_TEXT = "voice_to_text"
     VIDEO_TO_FRAMES = "video_to_frames"
     FILE_TO_MARKDOWN = "file_to_markdown"
+    IMAGE_TO_MARKDOWN = "image_to_markdown"
 
 
 class TaskStatus(str, enum.Enum):
@@ -41,6 +42,7 @@ class SourceType(str, enum.Enum):
     VOICE = "voice"
     VIDEO = "video"
     FILE = "file"
+    IMAGE = "image"
 
 
 class MetadataSource(str, enum.Enum):

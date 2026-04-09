@@ -1,0 +1,47 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "version": 2,
+  "builds": [
+    {
+      "src": "web/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist"
+      }
+    },
+    {
+      "src": "backend/app/main.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/v1/(.*)",
+      "dest": "backend/app/main.py"
+    },
+    {
+      "src": "/assets/(.*)",
+      "dest": "web/assets/$1"
+    },
+    {
+      "src": "/favicon.svg",
+      "dest": "web/favicon.svg"
+    },
+    {
+      "src": "/icons.svg",
+      "dest": "web/icons.svg"
+    },
+    {
+      "src": "/hero-video.mp4",
+      "dest": "web/hero-video.mp4"
+    },
+    {
+      "src": "/landing.html",
+      "dest": "web/landing.html"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "web/index.html"
+    }
+  ]
+}

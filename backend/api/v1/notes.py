@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -14,6 +14,7 @@ from app.database import get_db, async_session
 from app.models import Folder, Note, NoteTag, NoteVersion, TaskStatus, User, VersionOrigin
 from app.note_collaboration import dumps_tags, normalize_tags, resolve_note_metadata
 from app.schemas import NoteCreate, NoteDetail, NoteListResponse, NoteOut, NoteUpdate
+from app.storage import categorize_mime_type
 
 router = APIRouter(prefix="/notes", tags=["notes"])
 
@@ -51,6 +52,8 @@ def _build_note_out(note: Note) -> NoteOut:
         folder_id=note.folder_id,
         tags=_tag_values(note),
         tag_source=note.tag_source.value,
+        source_type=note.source_type.value if note.source_type else None,
+        attachment_count=len(note.attachments),
         created_at=note.created_at,
         updated_at=note.updated_at,
     )
@@ -115,7 +118,11 @@ async def list_notes(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = select(Note).options(selectinload(Note.tags)).where(Note.user_id == current_user.id)
+    query = (
+        select(Note)
+        .options(selectinload(Note.tags), selectinload(Note.attachments))
+        .where(Note.user_id == current_user.id)
+    )
 
     if folder_id:
         query = query.where(Note.folder_id == folder_id)
@@ -152,6 +159,7 @@ async def list_notes(
 @router.get("/{note_id}", response_model=NoteDetail)
 async def get_note(
     note_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -169,18 +177,22 @@ async def get_note(
 
     public_base = settings.EASYSTARTER_SERVER_URL.rstrip("/") if settings.EASYSTARTER_SERVER_URL else ""
     legacy_prefixes = ("./", "data/", "tmp/", "var/")
+    backend_base = str(request.base_url).rstrip("/")
     attachments = [
         {
             "id": attachment.id,
-            "type": "image" if attachment.mime_type.startswith("image/") else "file",
+            "type": categorize_mime_type(attachment.mime_type),
             "url": (
                 f"{public_base}/api/storage/{attachment.storage_path}"
                 if public_base
                 and (not os.path.isabs(attachment.storage_path))
                 and not attachment.storage_path.startswith(legacy_prefixes)
-                else f"/api/v1/files/{attachment.id}"
+                else f"{backend_base}/api/v1/files/{attachment.id}"
             ),
             "filename": attachment.filename,
+            "mime_type": attachment.mime_type,
+            "size": attachment.size,
+            "category": categorize_mime_type(attachment.mime_type),
         }
         for attachment in note.attachments
     ]
@@ -251,7 +263,9 @@ async def create_note(
 
     await db.commit()
     refreshed = await db.execute(
-        select(Note).options(selectinload(Note.tags)).where(Note.id == note_id, Note.user_id == current_user.id)
+        select(Note)
+        .options(selectinload(Note.tags), selectinload(Note.attachments))
+        .where(Note.id == note_id, Note.user_id == current_user.id)
     )
     created_note = refreshed.scalar_one()
 
@@ -328,7 +342,9 @@ async def update_note(
 
     await db.commit()
     refreshed = await db.execute(
-        select(Note).options(selectinload(Note.tags)).where(Note.id == note.id, Note.user_id == current_user.id)
+        select(Note)
+        .options(selectinload(Note.tags), selectinload(Note.attachments))
+        .where(Note.id == note.id, Note.user_id == current_user.id)
     )
     updated_note = refreshed.scalar_one()
 
