@@ -157,19 +157,50 @@ async def _call_llm(messages: list[dict], generation_id: str, stream_prefix: str
 
 
 def _parse_json_response(text: str) -> object:
-    """Extract JSON from LLM response."""
+    """Extract JSON from LLM response, handling markdown fences and trailing text."""
     cleaned = text.strip()
+    # Strip markdown code fences
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
         if cleaned.endswith("```"):
             cleaned = cleaned[:-3]
         cleaned = cleaned.strip()
-    for start_char, end_char in [("[", "]"), ("{", "}")]:
+
+    # Try direct parse first
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        pass
+
+    # Find balanced JSON object or array using bracket counting
+    for start_char, end_char in [("{", "}"), ("[", "]")]:
         start = cleaned.find(start_char)
-        end = cleaned.rfind(end_char)
-        if start != -1 and end != -1 and end > start:
-            return json.loads(cleaned[start:end + 1])
-    return json.loads(cleaned)
+        if start == -1:
+            continue
+        depth = 0
+        in_string = False
+        escape_next = False
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == "\\":
+                escape_next = True
+                continue
+            if ch == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if in_string:
+                continue
+            if ch == start_char:
+                depth += 1
+            elif ch == end_char:
+                depth -= 1
+                if depth == 0:
+                    return json.loads(cleaned[start:i + 1])
+
+    raise ValueError(f"No valid JSON found in response (length={len(cleaned)})")
 
 
 def _ensure_coverage(groups: list[dict], all_note_ids: set[str]) -> list[dict]:
@@ -256,29 +287,38 @@ async def run_multi_agent(db: AsyncSession, generation: InsightGeneration) -> No
             "theme": theme, "angle": angle, "note_count": len(group_note_ids),
         })
 
-        note_content_parts = []
-        for nid in group_note_ids:
-            note = note_map.get(nid)
-            if note:
-                note_content_parts.append(
-                    f"### {note['title']} (ID: {nid})\nTags: {', '.join(note['tags']) or '—'}\n\n{note['content']}\n"
-                )
-
-        sub_messages = [
-            {"role": "system", "content": SUB_AGENT_SYSTEM_PROMPT.format(date=today)},
-            {"role": "user", "content": f"## Analysis Angle: {angle}\n\n## Theme: {theme}\n\n## Notes ({len(group_note_ids)} total)\n\n" + "\n---\n".join(note_content_parts)},
-        ]
-
-        sub_response = await _call_llm(sub_messages, generation_id, stream_prefix=f"[s{group_num}] ")
-
-        report_payload = {}
         try:
-            report_payload = _parse_json_response(sub_response)
-            if isinstance(report_payload, dict):
-                report_payload["_group_note_ids"] = group_note_ids
-                reports.append(report_payload)
-        except (json.JSONDecodeError, ValueError):
-            logger.warning("Sub-agent s%d failed to produce valid JSON", group_num)
+            note_content_parts = []
+            for nid in group_note_ids:
+                note = note_map.get(nid)
+                if note:
+                    note_content_parts.append(
+                        f"### {note['title']} (ID: {nid})\nTags: {', '.join(note['tags']) or '—'}\n\n{note['content']}\n"
+                    )
+
+            sub_messages = [
+                {"role": "system", "content": SUB_AGENT_SYSTEM_PROMPT.format(date=today)},
+                {"role": "user", "content": f"## Analysis Angle: {angle}\n\n## Theme: {theme}\n\n## Notes ({len(group_note_ids)} total)\n\n" + "\n---\n".join(note_content_parts)},
+            ]
+
+            sub_response = await _call_llm(sub_messages, generation_id, stream_prefix=f"[s{group_num}] ")
+
+            report_payload = {}
+            try:
+                report_payload = _parse_json_response(sub_response)
+                if isinstance(report_payload, dict):
+                    report_payload["_group_note_ids"] = group_note_ids
+                    reports.append(report_payload)
+                else:
+                    logger.warning("Sub-agent s%d returned non-dict: %s", group_num, type(report_payload))
+            except (json.JSONDecodeError, ValueError) as parse_err:
+                logger.warning(
+                    "Sub-agent s%d JSON parse failed: %s\nResponse (first 500 chars): %s",
+                    group_num, parse_err, sub_response[:500],
+                )
+        except Exception as sub_err:
+            logger.warning("Sub-agent s%d failed: %s", group_num, sub_err)
+            report_payload = {}
 
         await broadcast_log(generation_id, {
             "type": "group_completed", "group": group_num, "total_groups": len(groups),
