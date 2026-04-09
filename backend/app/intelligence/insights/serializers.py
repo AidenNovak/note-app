@@ -4,6 +4,7 @@ import json
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.intelligence.insights.share_cards import build_share_card_model, extract_share_card_payload
 from app.models import InsightAgentRun, InsightGeneration, InsightReport, Note
@@ -103,6 +104,7 @@ async def build_report_detail(
     if note_ids:
         result = await db.execute(
             select(Note)
+            .options(selectinload(Note.tags))
             .where(Note.user_id == user_id, Note.id.in_(note_ids))
             .order_by(Note.updated_at.desc())
         )
@@ -114,7 +116,12 @@ async def build_report_detail(
         if note is None:
             continue
         source_notes.append(
-            InsightSourceNoteOut(id=note.id, title=note.title, updated_at=note.updated_at)
+            InsightSourceNoteOut(
+                id=note.id,
+                title=note.title,
+                tags=sorted(t.tag for t in note.tags),
+                updated_at=note.updated_at,
+            )
         )
 
     evidence_items = [

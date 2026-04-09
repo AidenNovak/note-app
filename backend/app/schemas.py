@@ -318,6 +318,7 @@ class InsightOut(BaseModel):
 class InsightSourceNoteOut(BaseModel):
     id: str
     title: str
+    tags: list[str] = []
     updated_at: datetime
 
 
