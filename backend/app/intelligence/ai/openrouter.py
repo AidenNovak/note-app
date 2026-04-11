@@ -9,7 +9,7 @@ from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-API_URL = "https://openrouter.ai/api/v1/chat/completions"
+API_URL = f"{settings.OPENROUTER_BASE_URL}/chat/completions"
 
 
 class OpenRouterProvider(AIProvider):
@@ -30,7 +30,7 @@ class OpenRouterProvider(AIProvider):
             ],
         }
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=60.0, verify=False) as client:
             resp = await client.post(API_URL, json=payload, headers=headers)
             resp.raise_for_status()
             data = resp.json()

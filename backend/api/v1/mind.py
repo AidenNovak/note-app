@@ -29,11 +29,21 @@ _APP_ROOT = Path(__file__).resolve().parents[2]
 _GRAPH_HTML = _APP_ROOT / "app" / "mind" / "graph.html"
 _JOURNEY_HTML = _APP_ROOT / "app" / "mind" / "journey.html"
 _CLUSTER_COLORS = [
-    "#7A9573",
-    "#9AA97C",
-    "#8BA7A0",
-    "#C1B58A",
+    "#6366F1",  # indigo
+    "#10B981",  # emerald
+    "#F59E0B",  # amber
+    "#EC4899",  # pink
+    "#8B5CF6",  # violet
+    "#06B6D4",  # cyan
+    "#EF4444",  # red
+    "#84CC16",  # lime
 ]
+
+# Graph tuning constants
+_EDGE_MIN_STRENGTH = 2.0       # drop edges weaker than this
+_EDGE_MAX_COUNT = 800           # keep at most this many edges (strongest first)
+_CORE_TAG_THRESHOLD = 5         # need ≥5 tags to be "core"
+_LABEL_SHOW_TOP_N = 60          # only send labels for top N nodes by degree
 
 
 @router.get("/graph/web", response_class=HTMLResponse)
@@ -171,7 +181,7 @@ async def get_graph(
         for t in tags:
             tag_freq[t] = tag_freq.get(t, 0) + 1
     top_tags_sorted = sorted(tag_freq.items(), key=lambda x: -x[1])
-    cluster_tags = [t for t, _ in top_tags_sorted[:4]]  # top 4 tags as clusters
+    cluster_tags = [t for t, _ in top_tags_sorted[:len(_CLUSTER_COLORS)]]
     cluster_color_map = {
         tag: _CLUSTER_COLORS[i % len(_CLUSTER_COLORS)]
         for i, tag in enumerate(cluster_tags)
@@ -185,35 +195,54 @@ async def get_graph(
                 return ct
         return cluster_tags[0] if cluster_tags else None
 
-    # Build edges: shared tags + similarity
+    # Build edges using inverted tag index (avoids O(n²) brute force)
+    tag_to_notes: dict[str, list[str]] = {}
+    for nid in note_ids:
+        for t in note_tags.get(nid, []):
+            tag_to_notes.setdefault(t, []).append(nid)
+
+    pair_shared: dict[tuple[str, str], int] = {}
+    for _tag, nids in tag_to_notes.items():
+        for i in range(len(nids)):
+            for j in range(i + 1, len(nids)):
+                pair = (min(nids[i], nids[j]), max(nids[i], nids[j]))
+                pair_shared[pair] = pair_shared.get(pair, 0) + 1
+
+    # Include high-similarity pairs without shared tags
+    for pair, sim_score in sim_map.items():
+        if pair not in pair_shared and sim_score * 5 >= _EDGE_MIN_STRENGTH:
+            pair_shared[pair] = 0
+
     edge_list: list[dict] = []
+    for pair, shared_count in pair_shared.items():
+        sim_score = sim_map.get(pair, 0.0)
+        strength = shared_count * 2 + sim_score * 5
+        if strength < _EDGE_MIN_STRENGTH:
+            continue
+        relation = "hybrid"
+        if shared_count > 0 and sim_score <= 0:
+            relation = "co_occurrence"
+        elif shared_count <= 0 and sim_score > 0:
+            relation = "semantic_similarity"
+        edge_list.append({
+            "source": pair[0],
+            "target": pair[1],
+            "strength": round(strength, 2),
+            "relation": relation,
+            "co_occurrence_count": shared_count,
+            "content_similarity": round(sim_score, 3),
+            "shared_note_count": shared_count,
+        })
+
+    # Keep only the strongest edges
+    edge_list.sort(key=lambda x: -x["strength"])
+    edge_list = edge_list[:_EDGE_MAX_COUNT]
+
+    # Recompute degree from surviving edges only
     edge_strength: dict[str, float] = {nid: 0.0 for nid in note_ids}
-    for i in range(len(note_ids)):
-        tags_i = set(note_tags.get(note_ids[i], []))
-        for j in range(i + 1, len(note_ids)):
-            tags_j = set(note_tags.get(note_ids[j], []))
-            shared_count = len(tags_i & tags_j)
-            pair = (min(note_ids[i], note_ids[j]), max(note_ids[i], note_ids[j]))
-            sim_score = sim_map.get(pair, 0.0)
-            strength = shared_count * 2 + sim_score * 5
-            if strength <= 0:
-                continue
-            relation = "hybrid"
-            if shared_count > 0 and sim_score <= 0:
-                relation = "co_occurrence"
-            elif shared_count <= 0 and sim_score > 0:
-                relation = "semantic_similarity"
-            edge_list.append({
-                "source": note_ids[i],
-                "target": note_ids[j],
-                "strength": round(strength, 2),
-                "relation": relation,
-                "co_occurrence_count": shared_count,
-                "content_similarity": round(sim_score, 3),
-                "shared_note_count": shared_count,
-            })
-            edge_strength[note_ids[i]] += strength
-            edge_strength[note_ids[j]] += strength
+    for e in edge_list:
+        edge_strength[e["source"]] += e["strength"]
+        edge_strength[e["target"]] += e["strength"]
 
     # Layout: golden-angle spiral on sphere + force-directed refinement
     n = len(notes)
@@ -230,14 +259,14 @@ async def get_graph(
         z = sphere_radius * math.sin(theta) * math.sin(phi)
         positions[nid] = [x, y, z]
 
-    # Force-directed refinement: 30 iterations
+    # Force-directed refinement: 15 iterations (reduced for speed)
     # Connected notes attract, then project back to sphere
     edge_index: dict[str, list[tuple[str, float]]] = {nid: [] for nid in note_ids}
     for e in edge_list:
         edge_index[e["source"]].append((e["target"], e["strength"]))
         edge_index[e["target"]].append((e["source"], e["strength"]))
 
-    for _iteration in range(30):
+    for _iteration in range(15):
         displacements: dict[str, list[float]] = {nid: [0.0, 0.0, 0.0] for nid in note_ids}
         for nid in note_ids:
             px, py, pz = positions[nid]
@@ -265,16 +294,17 @@ async def get_graph(
                 z / mag * sphere_radius,
             ]
 
-    # Build node list
+    # Build node list — wider size range, stricter core threshold
     max_tag_count = max((len(note_tags.get(nid, [])) for nid in note_ids), default=1) or 1
     nodes = []
     for idx, note in enumerate(notes):
         nid = note.id
         tag_count = len(note_tags.get(nid, []))
-        is_core = tag_count >= 3
-        size = round(1.35 + (tag_count / max_tag_count) * 1.95, 2)
+        is_core = tag_count >= _CORE_TAG_THRESHOLD
+        # Size: 0.8 (leaf) to 5.0 (hub) — much wider range
+        size = round(0.8 + (tag_count / max_tag_count) * 3.2, 2)
         if is_core:
-            size = round(size + 0.45, 2)
+            size = round(size + 1.0, 2)
         cluster = _note_cluster(nid)
         color = cluster_color_map.get(cluster or "", "#9AA097")
         px, py, pz = positions.get(nid, [0.0, 0.0, 0.0])

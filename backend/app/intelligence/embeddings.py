@@ -32,9 +32,9 @@ async def generate_embedding(text: str) -> list[float]:
     if not settings.OPENROUTER_API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY is not configured")
 
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, verify=False) as client:
         resp = await client.post(
-            "https://openrouter.ai/api/v1/embeddings",
+            f"{settings.OPENROUTER_BASE_URL}/embeddings",
             headers={
                 "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",

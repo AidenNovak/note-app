@@ -1,0 +1,48 @@
+[
+  {
+    "endpoint": "Chat Completions (流式)",
+    "model": "claude-haiku-4-5-20251001",
+    "streaming": true,
+    "total": 200,
+    "concurrency": 50,
+    "success_count": 40,
+    "failure_count": 160,
+    "success_rate": "20.0%",
+    "latency_ms": {
+      "min": 1401,
+      "max": 14366,
+      "mean": 7451,
+      "median": 6690,
+      "p90": 12972,
+      "p95": 13516
+    },
+    "ttft_ms": {
+      "min": 1337,
+      "mean": 6647,
+      "p90": 11195,
+      "p95": 11352
+    },
+    "errors": [
+      {
+        "status": 429,
+        "error": "stream error"
+      },
+      {
+        "status": 429,
+        "error": "stream error"
+      },
+      {
+        "status": 429,
+        "error": "stream error"
+      },
+      {
+        "status": 429,
+        "error": "stream error"
+      },
+      {
+        "status": 429,
+        "error": "stream error"
+      }
+    ]
+  }
+]

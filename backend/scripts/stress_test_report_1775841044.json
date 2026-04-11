@@ -1,0 +1,42 @@
+[
+  {
+    "endpoint": "Chat Completions (非流式)",
+    "model": "claude-haiku-4-5-20251001",
+    "streaming": false,
+    "total": 200,
+    "concurrency": 50,
+    "success_count": 46,
+    "failure_count": 154,
+    "success_rate": "23.0%",
+    "latency_ms": {
+      "min": 2293,
+      "max": 19656,
+      "mean": 9141,
+      "median": 7795,
+      "p90": 17478,
+      "p95": 19443
+    },
+    "errors": [
+      {
+        "status": 429,
+        "error": "{\"error\":{\"message\":\"Too many pending requests, please retry later\",\"type\":\"rate_limit_error\"}}"
+      },
+      {
+        "status": 429,
+        "error": "{\"error\":{\"message\":\"Too many pending requests, please retry later\",\"type\":\"rate_limit_error\"}}"
+      },
+      {
+        "status": 429,
+        "error": "{\"error\":{\"message\":\"Too many pending requests, please retry later\",\"type\":\"rate_limit_error\"}}"
+      },
+      {
+        "status": 429,
+        "error": "{\"error\":{\"message\":\"Too many pending requests, please retry later\",\"type\":\"rate_limit_error\"}}"
+      },
+      {
+        "status": 429,
+        "error": "{\"error\":{\"message\":\"Too many pending requests, please retry later\",\"type\":\"rate_limit_error\"}}"
+      }
+    ]
+  }
+]

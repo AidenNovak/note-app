@@ -1,0 +1,94 @@
+[
+  {
+    "endpoint": "Chat Completions (非流式)",
+    "model": "claude-haiku-4-5-20251001",
+    "streaming": false,
+    "total": 30,
+    "concurrency": 10,
+    "success_count": 30,
+    "failure_count": 0,
+    "success_rate": "100.0%",
+    "latency_ms": {
+      "min": 1574,
+      "max": 10240,
+      "mean": 3212,
+      "median": 2703,
+      "p90": 5362,
+      "p95": 5776
+    }
+  },
+  {
+    "endpoint": "Chat Completions (流式)",
+    "model": "claude-haiku-4-5-20251001",
+    "streaming": true,
+    "total": 30,
+    "concurrency": 10,
+    "success_count": 30,
+    "failure_count": 0,
+    "success_rate": "100.0%",
+    "latency_ms": {
+      "min": 1173,
+      "max": 10616,
+      "mean": 3046,
+      "median": 2649,
+      "p90": 4785,
+      "p95": 4996
+    },
+    "ttft_ms": {
+      "min": 873,
+      "mean": 2391,
+      "p90": 4020,
+      "p95": 4657
+    }
+  },
+  {
+    "endpoint": "Embeddings",
+    "model": "openai/text-embedding-3-small",
+    "streaming": false,
+    "total": 30,
+    "concurrency": 10,
+    "success_count": 0,
+    "failure_count": 30,
+    "success_rate": "0.0%",
+    "errors": [
+      {
+        "status": 404,
+        "error": "404 page not found"
+      },
+      {
+        "status": 404,
+        "error": "404 page not found"
+      },
+      {
+        "status": 404,
+        "error": "404 page not found"
+      },
+      {
+        "status": 404,
+        "error": "404 page not found"
+      },
+      {
+        "status": 404,
+        "error": "404 page not found"
+      }
+    ]
+  },
+  {
+    "endpoint": "Agent Model Chat",
+    "model": "claude-sonnet-4-6",
+    "streaming": false,
+    "total": 30,
+    "concurrency": 10,
+    "success_count": 30,
+    "failure_count": 0,
+    "success_rate": "100.0%",
+    "latency_ms": {
+      "min": 1169,
+      "max": 9840,
+      "mean": 3464,
+      "median": 2974,
+      "p90": 6395,
+      "p95": 6740
+    }
+  }
+]

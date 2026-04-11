@@ -153,9 +153,9 @@ async def _fetch_context(db: AsyncSession, user_id: str) -> dict:
 
 async def _call_openrouter(system: str, user_msg: str) -> dict:
     """Call OpenRouter chat completion and parse JSON response."""
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=120, verify=False) as client:
         resp = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
+            f"{settings.OPENROUTER_BASE_URL}/chat/completions",
             headers={
                 "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",
@@ -190,10 +190,10 @@ async def _call_openrouter_stream(system: str, user_msg: str, generation_id: str
     from app.intelligence.insights.service import broadcast_log
 
     collected = ""
-    async with httpx.AsyncClient(timeout=120) as client:
+    async with httpx.AsyncClient(timeout=120, verify=False) as client:
         async with client.stream(
             "POST",
-            "https://openrouter.ai/api/v1/chat/completions",
+            f"{settings.OPENROUTER_BASE_URL}/chat/completions",
             headers={
                 "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",

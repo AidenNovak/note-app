@@ -81,13 +81,23 @@ class Settings(BaseSettings):
     ]
 
     # AI Provider
-    AI_PROVIDER: str = "claude-sdk"  # claude-sdk | openrouter
+    AI_PROVIDER: str = "claude-sdk"  # claude-sdk | openrouter | ai-sdk
     OPENROUTER_API_KEY: str = ""
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_MODEL: str = "minimax/minimax-m2.7"
     ANTHROPIC_API_KEY: str = ""
     OPENAI_API_KEY: str = ""
     AI_MAX_TOKENS: int = 1000
     AI_TEMPERATURE: float = 0.7
+    
+    # AI SDK Configuration (for ai-sdk-v1 workflow)
+    AI_SDK_PROVIDER: str = "openai"  # openai | anthropic | google | openrouter
+    AI_SDK_MODEL: str = "gpt-4o"
+    AI_SDK_API_KEY: str = ""  # Falls back to OPENAI_API_KEY or OPENROUTER_API_KEY
+    AI_SDK_BASE_URL: str = ""  # Falls back to OPENROUTER_BASE_URL for openrouter
+    AI_SDK_MAX_TOKENS: int = 8000
+    AI_SDK_TEMPERATURE: float = 0.7
+    AI_SDK_STREAMING: bool = True
 
     # Embedding
     EMBEDDING_MODEL: str = "openai/text-embedding-3-small"

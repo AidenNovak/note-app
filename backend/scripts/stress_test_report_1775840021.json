@@ -1,0 +1,20 @@
+[
+  {
+    "endpoint": "Chat Completions (非流式)",
+    "model": "claude-haiku-4-5-20251001",
+    "streaming": false,
+    "total": 60,
+    "concurrency": 20,
+    "success_count": 60,
+    "failure_count": 0,
+    "success_rate": "100.0%",
+    "latency_ms": {
+      "min": 1289,
+      "max": 19279,
+      "mean": 5671,
+      "median": 2925,
+      "p90": 14678,
+      "p95": 18254
+    }
+  }
+]

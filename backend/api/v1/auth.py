@@ -91,3 +91,19 @@ async def refresh(token_body: RefreshRequest, db: AsyncSession = Depends(get_db)
 @router.get("/me", response_model=UserOut)
 async def me(current_user: User = Depends(get_current_user)):
     return current_user
+
+
+@router.patch("/me", response_model=UserOut)
+async def update_me(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    body = await request.json()
+    if "avatar_url" in body:
+        current_user.avatar_url = body["avatar_url"]
+    if "username" in body:
+        current_user.username = body["username"]
+    await db.commit()
+    await db.refresh(current_user)
+    return current_user

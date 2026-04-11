@@ -1,0 +1,69 @@
+version: 1
+
+groups:
+  insights:
+    description: 洞察生成工作流（检索 → 证据 → 卡片 → 审核）
+  note-app:
+    description: note-app 领域技能（数据库、存储、后端工作流）
+  easystarter:
+    description: easystarter 模板自带技能（web/server/native 脚手架）
+  native:
+    description: React Native / Expo 指南与 UI 技术栈
+  web:
+    description: Web UI 组合与 i18n 脚手架
+
+skills:
+  - id: note-app-db
+    group: note-app
+    status: active
+    path: /.claude/skills/note-app-db/SKILL.md
+
+  - id: insights
+    group: insights
+    status: active
+    path: /.claude/skills/insights/SKILL.md
+
+  - id: easystarter-web-ui
+    group: web
+    status: active
+    path: /.claude/skills/easystarter-web-ui/SKILL.md
+
+  - id: building-native-ui
+    group: native
+    status: vendor
+    path: /easystarter/.claude/skills/building-native-ui/SKILL.md
+
+  - id: heroui-native
+    group: native
+    status: vendor
+    path: /easystarter/.claude/skills/heroui-native/SKILL.md
+
+  - id: vercel-react-native-skills
+    group: native
+    status: vendor
+    path: /easystarter/.claude/skills/vercel-react-native-skills/SKILL.md
+
+  - id: upgrading-expo
+    group: native
+    status: vendor
+    path: /easystarter/.claude/skills/upgrading-expo/SKILL.md
+
+  - id: migrate-nativewind-to-uniwind
+    group: native
+    status: vendor
+    path: /easystarter/.claude/skills/migrate-nativewind-to-uniwind/SKILL.md
+
+  - id: easystarter-api-route
+    group: easystarter
+    status: vendor
+    path: /easystarter/.claude/skills/easystarter-api-route/SKILL.md
+
+  - id: easystarter-db-schema
+    group: easystarter
+    status: vendor
+    path: /easystarter/.claude/skills/easystarter-db-schema/SKILL.md
+
+  - id: easystarter-i18n
+    group: easystarter
+    status: vendor
+    path: /easystarter/.claude/skills/easystarter-i18n/SKILL.md

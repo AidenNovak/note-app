@@ -37,6 +37,7 @@ class UserOut(BaseModel):
     id: str
     username: str
     email: str
+    avatar_url: str | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
@@ -340,6 +341,7 @@ class InsightOut(BaseModel):
     report_version: int = 1
     evidence_count: int = 0
     action_items_count: int = 0
+    source_notes_count: int = 0  # Number of unique source notes referenced
     created_at: datetime
     generated_at: datetime
 
@@ -439,6 +441,7 @@ class InsightDetailOut(InsightOut):
 class PublicUserOut(BaseModel):
     id: str
     username: str
+    avatar_url: str | None = None
 
 
 class GroundFeedItem(BaseModel):
@@ -462,6 +465,7 @@ class GroundPostOut(BaseModel):
     extra_json: str | None = None
     likes: int = 0
     liked_by_me: bool = False
+    relevance_score: float | None = None
     created_at: datetime
 
 

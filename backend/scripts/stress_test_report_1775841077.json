@@ -1,0 +1,42 @@
+[
+  {
+    "endpoint": "Agent Model Chat",
+    "model": "claude-sonnet-4-6",
+    "streaming": false,
+    "total": 200,
+    "concurrency": 50,
+    "success_count": 38,
+    "failure_count": 162,
+    "success_rate": "19.0%",
+    "latency_ms": {
+      "min": 1507,
+      "max": 17388,
+      "mean": 9098,
+      "median": 9610,
+      "p90": 15691,
+      "p95": 17281
+    },
+    "errors": [
+      {
+        "status": 429,
+        "error": "{\"error\":{\"message\":\"Too many pending requests, please retry later\",\"type\":\"rate_limit_error\"}}"
+      },
+      {
+        "status": 429,
+        "error": "{\"error\":{\"message\":\"Too many pending requests, please retry later\",\"type\":\"rate_limit_error\"}}"
+      },
+      {
+        "status": 429,
+        "error": "{\"error\":{\"message\":\"Too many pending requests, please retry later\",\"type\":\"rate_limit_error\"}}"
+      },
+      {
+        "status": 429,
+        "error": "{\"error\":{\"message\":\"Too many pending requests, please retry later\",\"type\":\"rate_limit_error\"}}"
+      },
+      {
+        "status": 429,
+        "error": "{\"error\":{\"message\":\"Too many pending requests, please retry later\",\"type\":\"rate_limit_error\"}}"
+      }
+    ]
+  }
+]

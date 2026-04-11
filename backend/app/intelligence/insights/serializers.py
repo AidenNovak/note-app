@@ -73,6 +73,10 @@ def serialize_generation(generation: InsightGeneration) -> InsightGenerationOut:
 
 
 def serialize_report(report: InsightReport) -> InsightOut:
+    # Calculate source_notes_count from JSON field
+    source_note_ids = json.loads(report.source_note_ids or "[]")
+    source_notes_count = len(source_note_ids) if isinstance(source_note_ids, list) else 0
+    
     return InsightOut(
         id=report.id,
         generation_id=report.generation_id,
@@ -86,6 +90,7 @@ def serialize_report(report: InsightReport) -> InsightOut:
         report_version=report.report_version,
         evidence_count=len(report.evidence_items),
         action_items_count=len(report.action_items),
+        source_notes_count=source_notes_count,
         created_at=report.created_at,
         generated_at=report.generated_at,
     )

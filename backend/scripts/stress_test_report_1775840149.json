@@ -1,0 +1,20 @@
+[
+  {
+    "endpoint": "Agent Model Chat",
+    "model": "claude-sonnet-4-6",
+    "streaming": false,
+    "total": 40,
+    "concurrency": 20,
+    "success_count": 40,
+    "failure_count": 0,
+    "success_rate": "100.0%",
+    "latency_ms": {
+      "min": 1520,
+      "max": 19418,
+      "mean": 6822,
+      "median": 3851,
+      "p90": 17038,
+      "p95": 19236
+    }
+  }
+]

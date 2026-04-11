@@ -193,10 +193,10 @@ async def _call_openrouter_agent(
     from app.intelligence.insights.service import broadcast_log
 
     collected = ""
-    async with httpx.AsyncClient(timeout=settings.AGENT_REQUEST_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=settings.AGENT_REQUEST_TIMEOUT, verify=False) as client:
         async with client.stream(
             "POST",
-            "https://openrouter.ai/api/v1/chat/completions",
+            f"{settings.OPENROUTER_BASE_URL}/chat/completions",
             headers={
                 "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",

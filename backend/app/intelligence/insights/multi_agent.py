@@ -31,7 +31,10 @@ from app.intelligence.insights.workspace_agent import (
 
 logger = logging.getLogger(__name__)
 
-MULTI_AGENT_GROUP_SIZE = 5
+TARGET_REPORTS = 4  # aim for 3-5 reports regardless of note count
+S0_MAX_NOTES = 80
+S0_MAX_TOKENS = 4096
+MAX_GROUPS = 5
 
 # ---------------------------------------------------------------------------
 # s0 Orchestrator prompt
@@ -39,16 +42,17 @@ MULTI_AGENT_GROUP_SIZE = 5
 
 S0_SYSTEM_PROMPT = """\
 You are a knowledge workspace orchestrator. Given a manifest of all user notes,
-your job is to divide them into groups of approximately {group_size} notes each,
-and assign each group a unique analysis angle.
+your job is to divide them into exactly {num_groups} thematic groups and assign each group
+a unique analysis angle.
 
 ## Requirements
 
-1. EVERY note must appear in at least one group. Some notes may appear in multiple groups.
-2. Each group should have approximately {group_size} notes (3-7 is acceptable).
-3. Each group must have a unique, interesting analysis angle that discovers hidden connections.
-4. Provide diversity in angles — avoid repetitive themes.
-5. Try to find surprising, non-obvious connections between notes.
+1. Create exactly {num_groups} groups — no more, no less.
+2. Each group should contain roughly {group_size} notes (±50% is fine).
+3. EVERY note must appear in at least one group. Some notes may appear in multiple groups.
+4. Each group must have a unique, interesting analysis angle that discovers hidden connections.
+5. Provide diversity in angles — avoid repetitive themes.
+6. Try to find surprising, non-obvious connections between notes.
 
 ## Output Format
 
@@ -57,7 +61,7 @@ Return ONLY a JSON array of group objects:
 [
   {{
     "angle": "A compelling analysis angle in 1-2 sentences",
-    "note_ids": ["id1", "id2", "id3", "id4", "id5"],
+    "note_ids": ["id1", "id2", ...],
     "theme": "Short theme label (2-4 words)"
   }}
 ]
@@ -114,15 +118,15 @@ MUST be a standalone 50-100 word summary.
 # PLACEHOLDER_REST_OF_FILE
 
 
-async def _call_llm(messages: list[dict], generation_id: str, stream_prefix: str = "") -> str:
+async def _call_llm(messages: list[dict], generation_id: str, stream_prefix: str = "", max_tokens: int | None = None) -> str:
     """Call OpenRouter and stream tokens."""
     from app.intelligence.insights.service import broadcast_log
 
     collected = ""
-    async with httpx.AsyncClient(timeout=settings.AGENT_REQUEST_TIMEOUT) as client:
+    async with httpx.AsyncClient(timeout=settings.AGENT_REQUEST_TIMEOUT, verify=False) as client:
         async with client.stream(
             "POST",
-            "https://openrouter.ai/api/v1/chat/completions",
+            f"{settings.OPENROUTER_BASE_URL}/chat/completions",
             headers={
                 "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
                 "Content-Type": "application/json",
@@ -130,7 +134,7 @@ async def _call_llm(messages: list[dict], generation_id: str, stream_prefix: str
             json={
                 "model": settings.AGENT_MODEL,
                 "messages": messages,
-                "max_tokens": settings.AGENT_MAX_TOKENS_PER_TURN,
+                "max_tokens": max_tokens or settings.AGENT_MAX_TOKENS_PER_TURN,
                 "temperature": 0.7,
                 "stream": True,
             },
@@ -244,26 +248,45 @@ async def run_multi_agent(db: AsyncSession, generation: InsightGeneration) -> No
         "message": f"Workspace loaded: {len(all_notes)} notes, {len(connections)} connections",
     })
 
-    # s0 orchestrator — group notes
-    num_groups = max(1, math.ceil(len(all_notes) / MULTI_AGENT_GROUP_SIZE))
-    manifest_lines = [f"# Note Workspace — {len(all_notes)} notes\n"]
-    for i, n in enumerate(all_notes, 1):
+    # s0 orchestrator — group notes (limit to S0_MAX_NOTES most recent for token budget)
+    s0_notes = all_notes[:S0_MAX_NOTES] if len(all_notes) > S0_MAX_NOTES else all_notes
+    s0_note_ids = {n["id"] for n in s0_notes}
+    num_groups = min(MAX_GROUPS, max(3, TARGET_REPORTS))
+    group_size = max(3, math.ceil(len(s0_notes) / num_groups))
+    manifest_lines = [f"# Note Workspace — {len(s0_notes)} notes\n"]
+    for i, n in enumerate(s0_notes, 1):
         tags = ", ".join(n["tags"]) if n["tags"] else "—"
         manifest_lines.append(f"| {i} | {n['id']} | {n['title'][:60]} | {tags} | {n['word_count']} words |")
 
     s0_messages = [
-        {"role": "system", "content": S0_SYSTEM_PROMPT.format(group_size=MULTI_AGENT_GROUP_SIZE)},
-        {"role": "user", "content": "\n".join(manifest_lines) + f"\n\nPlease create approximately {num_groups} groups."},
+        {"role": "system", "content": S0_SYSTEM_PROMPT.format(num_groups=num_groups, group_size=group_size)},
+        {"role": "user", "content": "\n".join(manifest_lines) + f"\n\nPlease create exactly {num_groups} groups."},
     ]
 
-    await broadcast_log(generation_id, {"type": "progress", "message": f"s0 orchestrator analyzing {len(all_notes)} notes..."})
+    await broadcast_log(generation_id, {"type": "progress", "message": f"s0 orchestrator analyzing {len(s0_notes)} notes..."})
 
-    s0_response = await _call_llm(s0_messages, generation_id, stream_prefix="[s0] ")
-    groups = _parse_json_response(s0_response)
+    s0_response = await _call_llm(s0_messages, generation_id, stream_prefix="[s0] ", max_tokens=S0_MAX_TOKENS)
+    logger.info("s0 raw response (first 500 chars): %s", s0_response[:500])
+    try:
+        groups = _parse_json_response(s0_response)
+    except ValueError as e:
+        logger.error("s0 JSON parse failed: %s — raw: %s", e, s0_response[:300])
+        raise RuntimeError(f"s0 orchestrator JSON parse failed: {e}")
+    logger.info("s0 parsed type=%s value=%s", type(groups).__name__, str(groups)[:300])
+    # Handle wrapped response like {"groups": [...]}
+    if isinstance(groups, dict):
+        for key in ("groups", "data", "result"):
+            if key in groups and isinstance(groups[key], list):
+                groups = groups[key]
+                break
     if not isinstance(groups, list):
         raise RuntimeError("s0 orchestrator did not return a valid group array")
 
-    groups = _ensure_coverage(groups, all_note_ids)
+    groups = _ensure_coverage(groups, s0_note_ids)
+
+    # Hard cap: keep only the first MAX_GROUPS groups
+    if len(groups) > MAX_GROUPS:
+        groups = groups[:MAX_GROUPS]
 
     await broadcast_log(generation_id, {
         "type": "agent_turn", "turn": 1,
@@ -322,7 +345,9 @@ async def run_multi_agent(db: AsyncSession, generation: InsightGeneration) -> No
 
         await broadcast_log(generation_id, {
             "type": "group_completed", "group": group_num, "total_groups": len(groups),
-            "theme": theme, "title": report_payload.get("title", "") if isinstance(report_payload, dict) else "",
+            "theme": theme,
+            "title": report_payload.get("title", "") if isinstance(report_payload, dict) else "",
+            "description": report_payload.get("description", "") if isinstance(report_payload, dict) else "",
         })
 
     if not reports:

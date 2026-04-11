@@ -13,6 +13,7 @@ from app.database import get_db
 from app.models import GroundPost, GroundPostLike, InsightReport, Note, NoteLike, NoteTag, SharedNote, User
 from app.schemas import GroundFeedItem, GroundPostOut, PublicUserOut
 from app.auth.utils import get_current_user
+from app.ground.recommendation import rank_posts
 
 router = APIRouter(prefix="/ground", tags=["ground"])
 
@@ -45,7 +46,7 @@ async def get_feed(
         items.append(GroundFeedItem(
             id=sn.id,
             note_id=sn.note_id,
-            author=PublicUserOut(id=sn.user.id, username=sn.user.username),
+            author=PublicUserOut(id=sn.user.id, username=sn.user.username, avatar_url=sn.user.avatar_url),
             title=sn.note.title,
             preview=(sn.note.markdown_content or "")[:120],
             likes=like_count,
@@ -154,36 +155,69 @@ async def get_posts(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=50),
     post_type: str | None = None,
+    sort: str = Query("recommended", pattern="^(recommended|recent)$"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Unified feed of all ground posts (notes, mind graphs, insights)."""
+    """Unified feed of all ground posts (notes, mind graphs, insights).
+
+    sort=recommended (default): Jaccard tag similarity + time decay.
+    sort=recent: pure reverse-chronological.
+    """
+    if sort == "recent":
+        # ── Pure time-sorted path (original behaviour) ──
+        stmt = (
+            select(GroundPost)
+            .options(selectinload(GroundPost.user), selectinload(GroundPost.post_likes))
+            .order_by(GroundPost.created_at.desc())
+        )
+        if post_type:
+            stmt = stmt.where(GroundPost.post_type == post_type)
+        stmt = stmt.offset((page - 1) * page_size).limit(page_size)
+        result = await db.execute(stmt)
+        posts = result.scalars().all()
+        return [
+            GroundPostOut(
+                id=p.id, post_type=p.post_type, ref_id=p.ref_id,
+                author=PublicUserOut(id=p.user.id, username=p.user.username, avatar_url=p.user.avatar_url),
+                title=p.title, preview=p.preview, extra_json=p.extra_json,
+                likes=len(p.post_likes),
+                liked_by_me=any(lk.user_id == current_user.id for lk in p.post_likes),
+                created_at=p.created_at,
+            )
+            for p in posts
+        ]
+
+    # ── Recommended path: fetch 3x candidates, re-rank, paginate ──
+    candidate_limit = page_size * 3
     stmt = (
         select(GroundPost)
         .options(selectinload(GroundPost.user), selectinload(GroundPost.post_likes))
         .order_by(GroundPost.created_at.desc())
+        .limit(candidate_limit)
     )
     if post_type:
         stmt = stmt.where(GroundPost.post_type == post_type)
-    stmt = stmt.offset((page - 1) * page_size).limit(page_size)
-
     result = await db.execute(stmt)
-    posts = result.scalars().all()
+    candidates = list(result.scalars().all())
+
+    ranked = await rank_posts(db, current_user.id, candidates)
+
+    # Paginate the ranked list
+    start = (page - 1) * page_size
+    page_items = ranked[start : start + page_size]
 
     return [
         GroundPostOut(
-            id=p.id,
-            post_type=p.post_type,
-            ref_id=p.ref_id,
-            author=PublicUserOut(id=p.user.id, username=p.user.username),
-            title=p.title,
-            preview=p.preview,
-            extra_json=p.extra_json,
+            id=p.id, post_type=p.post_type, ref_id=p.ref_id,
+            author=PublicUserOut(id=p.user.id, username=p.user.username, avatar_url=p.user.avatar_url),
+            title=p.title, preview=p.preview, extra_json=p.extra_json,
             likes=len(p.post_likes),
             liked_by_me=any(lk.user_id == current_user.id for lk in p.post_likes),
+            relevance_score=score,
             created_at=p.created_at,
         )
-        for p in posts
+        for p, score in page_items
     ]
 
 
@@ -272,7 +306,7 @@ async def create_post(
         id=post.id,
         post_type=post.post_type,
         ref_id=post.ref_id,
-        author=PublicUserOut(id=current_user.id, username=current_user.username),
+        author=PublicUserOut(id=current_user.id, username=current_user.username, avatar_url=current_user.avatar_url),
         title=post.title,
         preview=post.preview,
         extra_json=post.extra_json,
