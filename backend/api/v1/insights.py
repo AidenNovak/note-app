@@ -2,20 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.utils import get_current_user
-from app.config import settings
 from app.database import async_session, get_db
 from app.intelligence.insights.share_cards import render_share_card_png
-from app.models import InsightGeneration, InsightReport, TaskStatus, User
+from app.models import InsightGeneration, TaskStatus, User
 from app.schemas import InsightDetailOut, InsightGenerationOut, InsightOut
 from app.intelligence.insights.service import (
     build_report_detail,
@@ -24,7 +22,6 @@ from app.intelligence.insights.service import (
     get_latest_generation,
     get_report,
     list_reports,
-    process_generation,
     serialize_generation,
     serialize_report,
     subscribe_to_generation,
@@ -86,27 +83,6 @@ async def get_latest_insight_generation(
     return serialize_generation(generation)
 
 
-@router.post("/generate", response_model=InsightGenerationOut, status_code=status.HTTP_202_ACCEPTED)
-async def generate_insights(
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    user_id = current_user.id
-    generation, created = await create_generation(db, user_id)
-    if created:
-        if os.getenv("APP_ENV") == "test" or settings.APP_ENV == "test":
-            await process_generation(generation.id, db=db)
-            db.expire_all()
-            refreshed = await get_latest_generation(db, user_id)
-            if refreshed is not None:
-                generation = refreshed
-        else:
-            background_tasks.add_task(process_generation, generation.id)
-
-    return serialize_generation(generation)
-
-
 @router.get("/{insight_id}/share-card.png")
 async def download_insight_share_card(
     insight_id: str,
@@ -149,60 +125,24 @@ async def get_insight_detail(
     return await build_report_detail(db, current_user.id, report)
 
 
-# ── Direct OpenRouter generation (new) ──────────────────────
+# ── Clustered Pipeline generation ──────────────────────
 
 
-async def _background_generate_direct(generation_id: str) -> None:
-    """Background task: generate insight report via OpenRouter."""
-    from app.intelligence.insights.generator import generate_insight_report
-
-    async with async_session() as db:
-        generation = await db.get(InsightGeneration, generation_id)
-        if generation is None:
-            return
-        generation.status = TaskStatus.PROCESSING
-        await db.commit()
-        try:
-            await generate_insight_report(db, generation)
-        except Exception as exc:
-            logger.exception("Direct insight generation failed for %s", generation_id)
-            generation.status = TaskStatus.FAILED
-            generation.error = str(exc)[:500]
-            generation.is_active = False
-            await db.commit()
-
-
-@router.post("/generate/direct", response_model=InsightGenerationOut, status_code=status.HTTP_202_ACCEPTED)
-async def generate_insights_direct(
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Generate insights using direct OpenRouter call (no Claude SDK agent)."""
-    generation, created = await create_generation(db, current_user.id)
-    if created:
-        background_tasks.add_task(_background_generate_direct, generation.id)
-    return serialize_generation(generation)
-
-
-# ── Workspace Agent generation ──────────────────────
-
-
-async def _background_generate_agent(generation_id: str) -> None:
-    """Run workspace agent in its own db session."""
-    from app.intelligence.insights.workspace_agent import run_workspace_agent
+async def _background_generate_clustered(generation_id: str) -> None:
+    """Run clustered pipeline in its own db session."""
+    from app.intelligence.insights.clustered_pipeline import run_clustered_pipeline
 
     async with async_session() as db:
         generation = await db.get(InsightGeneration, generation_id)
         if generation is None:
             return
         generation.status = TaskStatus.PROCESSING
-        generation.workflow_version = "workspace-agent-v1"
+        generation.workflow_version = "clustered-v1"
         await db.commit()
         try:
-            await run_workspace_agent(db, generation)
+            await run_clustered_pipeline(db, generation)
         except Exception as exc:
-            logger.exception("Workspace agent generation failed for %s", generation_id)
+            logger.exception("Clustered pipeline failed for %s", generation_id)
             generation.status = TaskStatus.FAILED
             generation.error = str(exc)[:500]
             generation.is_active = False
@@ -210,54 +150,16 @@ async def _background_generate_agent(generation_id: str) -> None:
             await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
 
 
-@router.post("/generate/agent", response_model=InsightGenerationOut, status_code=status.HTTP_202_ACCEPTED)
-async def generate_insights_agent(
+@router.post("/generate/clustered", response_model=InsightGenerationOut, status_code=status.HTTP_202_ACCEPTED)
+async def generate_insights_clustered(
     background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Generate insights via workspace agent. Returns generation ID, stream via GET."""
+    """Generate insights via graph-clustered pipeline. Uses Louvain community detection + parallel generation."""
     generation, created = await create_generation(db, current_user.id)
     if created:
-        background_tasks.add_task(_background_generate_agent, generation.id)
-    return serialize_generation(generation)
-
-
-# ── Multi-Agent generation ──────────────────────
-
-
-async def _background_generate_multi_agent(generation_id: str) -> None:
-    """Run multi-agent orchestrator in its own db session."""
-    from app.intelligence.insights.multi_agent import run_multi_agent
-
-    async with async_session() as db:
-        generation = await db.get(InsightGeneration, generation_id)
-        if generation is None:
-            return
-        generation.status = TaskStatus.PROCESSING
-        generation.workflow_version = "multi-agent-v1"
-        await db.commit()
-        try:
-            await run_multi_agent(db, generation)
-        except Exception as exc:
-            logger.exception("Multi-agent generation failed for %s", generation_id)
-            generation.status = TaskStatus.FAILED
-            generation.error = str(exc)[:500]
-            generation.is_active = False
-            await db.commit()
-            await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
-
-
-@router.post("/generate/multi-agent", response_model=InsightGenerationOut, status_code=status.HTTP_202_ACCEPTED)
-async def generate_insights_multi_agent(
-    background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Generate insights via multi-agent orchestrator. s0 groups notes, sN sub-agents generate."""
-    generation, created = await create_generation(db, current_user.id)
-    if created:
-        background_tasks.add_task(_background_generate_multi_agent, generation.id)
+        background_tasks.add_task(_background_generate_clustered, generation.id)
     return serialize_generation(generation)
 
 

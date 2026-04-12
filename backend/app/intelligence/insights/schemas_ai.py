@@ -76,3 +76,24 @@ class NoteGroupListOutput(BaseModel):
     """Schema for s0 orchestrator: groups of notes with analysis angles."""
 
     groups: list[NoteGroupOutput]
+
+
+# ── Clustered Pipeline (angle discovery output) ────────
+
+
+class AngleOutput(BaseModel):
+    """A single analysis angle discovered from note clusters."""
+
+    angle_name: str = Field(description="角度名称，2-6个字")
+    description: str = Field(description="该角度要探索的问题，1-2句话")
+    note_ids: list[str] = Field(description="该角度最相关的笔记ID列表")
+    type_hint: str = Field(
+        default="pattern",
+        description="报告类型提示: pattern | connection | gap | trend | synthesis",
+    )
+
+
+class AngleListOutput(BaseModel):
+    """Output of the angle discovery LLM call."""
+
+    angles: list[AngleOutput]
