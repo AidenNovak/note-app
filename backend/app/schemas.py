@@ -95,6 +95,7 @@ class NoteOut(BaseModel):
     tag_source: str
     source_type: str | None = None
     attachment_count: int = 0
+    content_preview: str = ""
     created_at: datetime
     updated_at: datetime
 

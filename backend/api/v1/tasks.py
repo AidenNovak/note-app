@@ -101,6 +101,7 @@ async def create_note(
             content,
             explicit_title=title,
             explicit_tags=explicit_tags,
+            skip_ai=True,
         )
         note_title = resolved.title
         title_source = resolved.title_source
@@ -108,6 +109,7 @@ async def create_note(
         tag_source = resolved.tag_source
         note_content = resolved.markdown_content
         initial_origin = VersionOrigin.HUMAN
+        needs_ai_tags = resolved.needs_ai_tagging
     else:
         note_title = title or (uploads[0].filename if uploads else "Untitled Note")
         title_source = MetadataSource.HUMAN if title and title.strip() else MetadataSource.SYSTEM
@@ -115,6 +117,7 @@ async def create_note(
         tag_source = MetadataSource.HUMAN if tag_values else MetadataSource.NONE
         note_content = None
         initial_origin = VersionOrigin.SYSTEM
+        needs_ai_tags = False
 
     note = Note(
         id=note_id,
@@ -160,8 +163,21 @@ async def create_note(
     if task_id is not None:
         background_tasks.add_task(_process_note, task_id, note_id, content, source_file_id, task_type)
 
+    # Async AI tagging for text notes without explicit tags
+    if needs_ai_tags and note_content:
+        from app.database import async_session
+        from api.v1.notes import _background_ai_tag
+        background_tasks.add_task(
+            _background_ai_tag, note_id, note_content,
+            note_title, current_user.id,
+        )
+
     tags_result = await db.execute(select(NoteTag.tag).where(NoteTag.note_id == note_id))
     note_tags = [r[0] for r in tags_result.all()]
+
+    # Build content preview
+    from api.v1.notes import _content_preview
+    preview = _content_preview(note_content)
 
     return NoteOut(
         id=note_id, title=note_title, title_source=title_source.value,
@@ -169,6 +185,7 @@ async def create_note(
         folder_id=folder_id, tags=note_tags, tag_source=tag_source.value,
         source_type=source_type.value if source_type else None,
         attachment_count=len(saved_files),
+        content_preview=preview,
         created_at=note.created_at, updated_at=note.updated_at,
     )
 

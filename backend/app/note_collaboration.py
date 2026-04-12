@@ -26,6 +26,7 @@ class ResolvedNoteMetadata:
     tags: list[str]
     tag_source: MetadataSource
     markdown_content: str | None
+    needs_ai_tagging: bool = False
 
 
 @dataclass
@@ -243,6 +244,7 @@ async def resolve_note_metadata(
     fallback_tag_source: MetadataSource = MetadataSource.NONE,
     db: AsyncSession | None = None,
     user_id: str | None = None,
+    skip_ai: bool = False,
 ) -> ResolvedNoteMetadata:
     cleaned_content = markdown_content.strip() if markdown_content else None
     parsed_title = None
@@ -269,7 +271,9 @@ async def resolve_note_metadata(
         tags = normalize_tags(fallback_tags)
         tag_source = fallback_tag_source if tags else MetadataSource.NONE
 
-    if cleaned_content and (not title or not tags):
+    needs_ai = cleaned_content and (not title or not tags)
+
+    if needs_ai and not skip_ai:
         try:
             anchor_tag: str | None = None
             similar_tags: list[list[str]] | None = None
@@ -309,6 +313,7 @@ async def resolve_note_metadata(
         tags=tags,
         tag_source=tag_source,
         markdown_content=cleaned_content,
+        needs_ai_tagging=bool(needs_ai and skip_ai and not tags),
     )
 
 

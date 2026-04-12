@@ -31,6 +31,46 @@ async def _background_embed(note_id: str, content: str, user_id: str) -> None:
     except Exception:
         logger.warning("Background embedding failed for note %s", note_id, exc_info=True)
 
+
+async def _background_ai_tag(note_id: str, content: str, title: str, user_id: str) -> None:
+    """Run AI tagging in background after note is already saved."""
+    import logging
+    logger = logging.getLogger(__name__)
+    try:
+        async with async_session() as db:
+            resolved = await resolve_note_metadata(
+                content,
+                explicit_title=title if title != "Untitled Note" else None,
+                skip_ai=False,
+                db=db,
+                user_id=user_id,
+            )
+            if not resolved.tags:
+                return
+
+            # Only apply AI tags if no human tags have been added since
+            existing_tags = (await db.execute(
+                select(NoteTag).where(NoteTag.note_id == note_id)
+            )).scalars().all()
+            if existing_tags:
+                return  # tags were added manually — don't overwrite
+
+            note = (await db.execute(
+                select(Note).where(Note.id == note_id, Note.user_id == user_id)
+            )).scalar_one_or_none()
+            if not note:
+                return
+
+            await _replace_note_tags(db, note_id, resolved.tags)
+            note.tag_source = resolved.tag_source
+            # Also update title if it was "Untitled Note" and AI generated one
+            if note.title == "Untitled Note" and resolved.title != "Untitled Note":
+                note.title = resolved.title
+                note.title_source = resolved.title_source
+            await db.commit()
+    except Exception:
+        logger.warning("Background AI tagging failed for note %s", note_id, exc_info=True)
+
 NOTE_SORT_COLUMNS = {
     "created_at": Note.created_at,
     "updated_at": Note.updated_at,
@@ -41,6 +81,30 @@ NOTE_SORT_COLUMNS = {
 
 def _tag_values(note: Note) -> list[str]:
     return sorted(tag.tag for tag in note.tags)
+
+
+def _content_preview(content: str | None, max_len: int = 150) -> str:
+    """Extract first ~150 chars of markdown content, stripping headers/formatting."""
+    if not content:
+        return ""
+    lines = []
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        # Skip markdown headings
+        if stripped.startswith("#"):
+            stripped = stripped.lstrip("# ").strip()
+        # Skip horizontal rules
+        if stripped in ("---", "***", "___"):
+            continue
+        lines.append(stripped)
+        if sum(len(l) for l in lines) >= max_len:
+            break
+    preview = " ".join(lines)
+    if len(preview) > max_len:
+        preview = preview[:max_len].rstrip() + "…"
+    return preview
 
 
 def _build_note_out(note: Note) -> NoteOut:
@@ -54,6 +118,7 @@ def _build_note_out(note: Note) -> NoteOut:
         tag_source=note.tag_source.value,
         source_type=note.source_type.value if note.source_type else None,
         attachment_count=len(note.attachments),
+        content_preview=_content_preview(note.markdown_content),
         created_at=note.created_at,
         updated_at=note.updated_at,
     )
@@ -210,6 +275,7 @@ async def get_note(
         source_type=note.source_type.value if note.source_type else None,
         source_file_id=note.source_file_id,
         current_version=note.current_version,
+        content_preview=_content_preview(note.markdown_content),
         created_at=note.created_at,
         updated_at=note.updated_at,
     )
@@ -225,12 +291,14 @@ async def create_note(
     note_id = str(uuid.uuid4())
     await _validate_folder_access(db, current_user.id, body.folder_id)
 
+    # Fast path: resolve title only, skip AI tagging to avoid blocking
     resolved = await resolve_note_metadata(
         body.markdown_content,
         explicit_title=body.title,
         explicit_tags=body.tags,
         db=db,
         user_id=current_user.id,
+        skip_ai=True,
     )
 
     note = Note(
@@ -272,6 +340,13 @@ async def create_note(
     # Async embedding + similarity
     if resolved.markdown_content:
         background_tasks.add_task(_background_embed, note_id, resolved.markdown_content, current_user.id)
+
+    # Async AI tagging — runs after note is already saved
+    if resolved.needs_ai_tagging and resolved.markdown_content:
+        background_tasks.add_task(
+            _background_ai_tag, note_id, resolved.markdown_content,
+            resolved.title, current_user.id,
+        )
 
     return _build_note_out(created_note)
 
