@@ -389,6 +389,7 @@ async def discover_angles(
     logger.info("discover_angles: text_len=%d, usage=%s", len(result.text), result.usage)
 
     json_str = _extract_json(result.text)
+    json_str = _fix_json_escapes(json_str)
     data = json.loads(json_str)
 
     # Normalize: might be {"angles": [...]} or bare [...]

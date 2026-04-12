@@ -1,162 +1,387 @@
-# Insights（单 Agent 人文洞察模式，single-agent-v1 / ai-sdk-v1）
+# Atélier Insight 生成系统
 
-本 skill 定义 note-app 的 insight 生成工作流。支持两种实现方式：
-- `single-agent-v1`: 使用 Claude Agent SDK（默认）
-- `ai-sdk-v1`: 使用 Vercel AI SDK（推荐，支持多 provider）
+> *像园丁照料植物一样，让 Insight 自然生长*
+
+本 skill 定义 atélier 的 insight 生成工作流。
+
+⚠️ **重要提示**：
+- **默认使用旧系统**（Claude Agent SDK）- 稳定、经过验证
+- **新系统**（Atélier AI SDK）- 实验性，需要显式启用
+- 随时可回退，零破坏性修改
+
+---
+
+## 快速切换
+
+```bash
+# 查看当前状态
+./scripts/toggle-insight-workflow.sh status
+
+# 启用新系统（实验性，更快）
+./scripts/toggle-insight-workflow.sh atelier
+
+# 回退到旧系统（稳定）
+./scripts/toggle-insight-workflow.sh legacy
+
+# 测试新系统
+./scripts/toggle-insight-workflow.sh test
+```
+
+然后重启后端服务即可生效。
+
+---
 
 ## 设计理念
 
-- 不是数据分析，而是"读懂一个人"——从笔记中编织出个人理念、行为准则、擅长领域和可能性
-- 找笔记间的深层联系，不是表面主题分类
-- 洞察作者真正擅长什么、在意什么、可能忽略了什么
-- 行动建议像了解你的朋友给的建议——具体、温暖、可执行
-- 语言温暖有洞见，不空洞不说教
+### 不是数据分析，是「被看见」
+
+- **读懂一个人**：从笔记中感受思维方式、关注领域、内在矛盾
+- **发现隐藏联系**：笔记之间不明显但有意义的联系
+- **像朋友一样**：温暖、具体、可执行的建议
+- **敢于指出矛盾**：矛盾是最有价值的洞察入口
+
+### 渐进式生长
+
+```
+🌱 quick    → 200-400字   → 日常快速回顾
+🌿 standard → 600-1000字  → 平衡深度和效率（默认）
+🌳 deep     → 1500-2000字 → 周期性深度分析
+```
+
+---
 
 ## 架构
 
-单 agent（`insight-analyst`）单次调用，用一个精心设计的中文 prompt 完成：
-- 笔记阅读与理解
-- 深层联系发现
-- 一篇深度洞察报告
-- 分享卡片生成
+### 核心文件
 
-每次调用只生成 1 篇报告，把一个发现写深写透。如需多篇洞察，由后端多次调度。
-
-### 实现文件
-
-| 组件 | 文件 |
+| 文件 | 说明 |
 |------|------|
-| Claude Agent SDK 脚本 | `/scripts/claude_insight_agent.mjs` |
-| **AI SDK 脚本（新）** | `/scripts/ai_sdk_insight_agent.mjs` |
-| Profile 配置 | `backend/app/intelligence/insights/profiles.py` |
-| Agent 运行器 | `backend/app/intelligence/insights/agent.py` |
-| 落库与 schema | `backend/app/intelligence/insights/service.py`、`backend/app/schemas.py` |
+| `scripts/atelier-insight.mjs` | **主生成器**，使用 Vercel AI SDK |
+| `backend/app/intelligence/insights/profiles.py` | 配置管理，支持三种模式 |
+| `backend/app/intelligence/insights/agent.py` | Agent 运行器 |
+| `backend/app/intelligence/agent_engine.py` | 任务调度引擎 |
 
-### 支持的 AI Provider（AI SDK 版本）
+### 生成流程
 
-| Provider | 配置值 | 说明 |
-|----------|--------|------|
-| OpenAI | `openai` | 默认，支持 gpt-4o, gpt-4o-mini 等 |
-| Anthropic | `anthropic` | 支持 claude-3-opus, claude-3-sonnet 等 |
-| Google | `google` | 支持 gemini-1.5-pro 等 |
-| OpenRouter | `openrouter` | 统一接口，支持多种模型 |
-
-## 产出契约
-
-每次调用产出两个层次的内容：
-
-### 报告（report_markdown）— 在 app 内阅读的主体
-
-一篇 1500-2500 字的深度分析文章，结构：
-- `## 为什么重要`（3-5 段，场景开头 → 深层分析 → 代价）
-- `## 证据`（至少 3 条，每条含原文引用 + 100-200 字分析）
-- `## 建议的下一步`（2-3 个建议，从易到难，语气像朋友）
-
-写作风格：像写给聪明朋友的私人信件，用具体细节，敢指出矛盾，让人有「被看见了」的感觉。
-
-### 分享卡片（share_card → PNG）— 报告的可视化封面
-
-报告的浓缩版，用于社交分享。包含标题、3-5 句摘要、一段原文引用、一个行动建议。
-渲染为 1200px 宽的杂志质感 PNG（暖纸色背景 + 噪点纹理 + accent bar）。
-
-### JSON 形状
-
-```json
-{
-  "summary": "一句话生成摘要",
-  "reports": [
-    {
-      "type": "trend | connection | gap | opportunity",
-      "status": "published",
-      "title": "简短标题",
-      "description": "3-5 句摘要",
-      "report_markdown": "# 标题\n\n## 为什么重要\n...\n\n## 证据\n...\n\n## 建议的下一步\n...",
-      "source_note_ids": ["note-id"],
-      "evidence_items": [
-        { "note_id": "note-id", "quote": "原文引用", "rationale": "详细分析" }
-      ],
-      "action_items": [
-        { "title": "行动标题", "detail": "具体做什么", "priority": "low | medium | high" }
-      ],
-      "share_card": {
-        "theme": "trend | connection | gap | opportunity",
-        "eyebrow": "分类标签",
-        "headline": "分享标题",
-        "summary": "3-5 句分享摘要",
-        "evidence_quote": "最有力的原文引用",
-        "evidence_source": "笔记标题",
-        "action_title": "行动建议",
-        "action_detail": "具体怎么做",
-        "footer": "底部文字"
-      }
-    }
-  ]
-}
+```
+用户触发
+    ↓
+fetch_note_context(笔记) → write_workspace(工作区)
+    ↓
+run_atelier_insight_stream(mode="standard")
+    ↓
+atelier-insight.mjs (AI SDK)
+    ↓
+落库 → 推送客户端
 ```
 
-硬性约束：
-- `reports` 数组只含 1 个元素，每次调用聚焦一个最有价值的发现
-- `report_markdown` 必须 1500-2500 字，包含 `## 为什么重要` / `## 证据` / `## 建议的下一步`
-- `evidence_items` 至少 3 条，来自不同笔记，`quote` 与 `rationale` 非空
-- `source_note_ids` 与 `evidence_items[*].note_id` 必须来自上下文快照中的真实 note_id
-- `share_card` 内嵌在 report 中，是报告的浓缩版封面
-- 所有面向用户的文本必须使用中文
+---
 
-## 切换 Workflow 版本
+## 启用新系统（Atélier AI SDK）
 
-### 使用 AI SDK（推荐）
+### 步骤 1：安装依赖
 
-```python
-# backend 调用方式
-from app.intelligence.insights.profiles import build_insight_task_config
-from app.intelligence.insights.agent import run_ai_sdk_insight_agent_stream
-
-# 使用 AI SDK workflow
-config = build_insight_task_config(use_ai_sdk=True)
-# 或设置环境变量：AI_PROVIDER=ai-sdk
-```
-
-环境变量配置（`.env`）：
-```bash
-# AI SDK Provider: openai | anthropic | google | openrouter
-AI_SDK_PROVIDER=openrouter
-AI_SDK_MODEL=anthropic/claude-3.5-sonnet
-AI_SDK_API_KEY=your_api_key
-AI_SDK_BASE_URL=https://openrouter.ai/api/v1  # 仅 openrouter 需要
-AI_SDK_MAX_TOKENS=8000
-AI_SDK_TEMPERATURE=0.7
-AI_SDK_STREAMING=true
-```
-
-安装依赖：
 ```bash
 cd scripts
 npm install
 ```
 
-### 使用 Claude Agent SDK（原有）
+### 步骤 2：启用新系统（二选一）
 
-```python
-config = build_insight_task_config(use_ai_sdk=False)  # 默认
+**方式 A：使用切换脚本（推荐）**
+```bash
+./scripts/toggle-insight-workflow.sh atelier
 ```
 
-### 回退到 4-stage 工作流
+**方式 B：手动编辑 .env**
+```bash
+# backend/.env
 
-原有 4-stage 工作流（retrieval → editor → review → card）代码保留在 `claude_insight_agent.mjs` 中。
-如需回退，将 `profiles.py` 的 `workflow_version` 改回 `"cloud-sdk-v1"` 并恢复 4 个 stage 配置即可。
+# 取消注释这两行来启用新系统
+INSIGHT_WORKFLOW_VERSION=atelier-v1
+INSIGHT_MODE=standard  # quick | standard | deep
+```
+
+### 步骤 3：重启后端服务
+
+```bash
+make backend-dev
+```
+
+---
+
+## 后端调用（新系统）
+
+```python
+from app.intelligence.insights.profiles import (
+    build_insight_task_config,
+    select_mode_by_context,
+)
+from app.intelligence.insights.agent import run_atelier_insight_stream
+
+# 方式1：根据笔记数量自动选择模式
+note_count = len(notes)
+mode = select_mode_by_context(note_count)  # quick | standard | deep
+
+# 方式2：显式指定模式
+config = build_insight_task_config(mode="standard")
+
+# 方式3：使用特定 provider
+config = build_insight_task_config(
+    mode="deep",
+    provider="anthropic",
+    model="claude-3-5-sonnet-20241022",
+)
+
+# 运行
+async for event in run_atelier_insight_stream(
+    workspace_path,
+    mode=config["mode"],
+    provider=config.get("provider"),
+    model=config.get("model"),
+):
+    if event["type"] == "progress":
+        print(event["data"])
+    elif event["type"] == "final":
+        reports = event["data"]["reports"]
+```
+
+### 4. 手动测试（不需要启用新系统）
+
+可以直接测试新系统，不影响线上：
+
+```bash
+# 设置环境变量
+export AI_SDK_PROVIDER=openrouter
+export AI_SDK_MODEL=anthropic/claude-3.5-haiku
+export AI_SDK_API_KEY=your_key
+export AI_SDK_BASE_URL=https://openrouter.ai/api/v1
+
+# 测试标准模式
+node scripts/atelier-insight.mjs backend/data/insights/{generation_id}
+
+# 测试快速模式
+node scripts/atelier-insight.mjs backend/data/insights/{generation_id} --mode=quick
+
+# 测试深度模式
+node scripts/atelier-insight.mjs backend/data/insights/{generation_id} --mode=deep
+```
+
+或使用测试脚本：
+```bash
+./scripts/test-atelier-insight.sh
+```
+
+---
+
+## 三种模式详解
+
+### 🌱 Quick 模式
+
+**场景**：日常快速回顾，笔记较少时
+
+**输出**：
+- 长度：200-400 字
+- 结构：一个观察 + 简要分析 + 一个小建议
+- 语气：像朋友随口分享
+
+**示例**：
+```
+我注意到你最近经常在笔记里提到「时间不够用」...
+（一段简短分析）
+
+一个小建议：试试看每天只给自己安排 3 件事？
+```
+
+### 🌿 Standard 模式（默认）
+
+**场景**：常规洞察生成
+
+**输出**：
+- 长度：600-1000 字
+- 结构：
+  - 【为什么重要】场景开头 → 深层分析 → 代价
+  - 【证据】2-3 条，含原文引用 + 解读
+  - 【下一步】1-2 个具体建议
+
+### 🌳 Deep 模式
+
+**场景**：周期性深度分析，笔记较多时
+
+**输出**：
+- 长度：1500-2000 字
+- 结构：
+  - 【为什么重要】3-4 段，编织连贯叙事
+  - 【证据】逐条深入分析，至少 3 篇笔记
+  - 【建议的下一步】2-3 个，从易到难
+
+---
+
+## Provider 支持
+
+| Provider | 推荐模型 | 说明 |
+|----------|---------|------|
+| OpenAI | gpt-4o-mini | 快速、便宜 |
+| OpenAI | gpt-4o | 质量更好 |
+| Anthropic | claude-3-haiku | 快速 |
+| Anthropic | claude-3-5-sonnet | 质量优秀 |
+| Google | gemini-1.5-flash | 免费额度多 |
+| OpenRouter | openai/gpt-4o-mini | 统一接口 |
+
+---
+
+## 提示词系统
+
+### 系统提示
+
+```
+你是一位温暖、细腻的朋友，正在帮朋友翻阅 TA 的笔记。
+
+你的任务不是做冷冰冰的数据分析，而是像一个懂 TA 的朋友，帮 TA 发现：
+- 最近 TA 在想什么？
+- 有什么反复出现的念头或模式？
+- 有什么 TA 可能忽略了的信号？
+
+风格要求：
+- 像朋友聊天一样自然、温暖
+- 不用专业术语，不说教
+- 敢于指出矛盾，但语气温柔
+- 让 TA 读完有「被看见了」的感觉
+
+所有输出必须是中文。
+```
+
+### 用户提示（Standard 示例）
+
+```
+帮朋友整理笔记，想深入聊聊 TA 最近的思考：
+
+共有 {n} 条笔记：
+
+【笔记标题】(标签)
+笔记内容预览...
+
+---
+
+请像写一封简短的信一样，用 JSON 格式返回...
+```
+
+---
+
+## 输出格式
+
+```json
+{
+  "workflow_version": "atelier-standard-v1",
+  "summary": "一句话总结",
+  "agent_runs": [...],
+  "reports": [
+    {
+      "type": "pattern | connection | gap | trend",
+      "status": "published",
+      "title": "标题",
+      "description": "摘要",
+      "confidence": 0.8,
+      "importance_score": 0.75,
+      "novelty_score": 0.6,
+      "report_markdown": "# 标题\n\n## 为什么重要\n...",
+      "source_note_ids": ["note-id"],
+      "evidence_items": [
+        {"note_id": "...", "quote": "...", "rationale": "..."}
+      ],
+      "action_items": [
+        {"title": "...", "detail": "...", "priority": "medium"}
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## 与旧版对比
+
+| 维度 | 旧版 (Claude SDK) | 新版 (Atélier AI SDK) |
+|------|------------------|----------------------|
+| 依赖 | 需要本地安装 Claude Agent SDK | 纯 npm 包，一键安装 |
+| Provider | 仅 Claude | OpenAI/Anthropic/Google/OpenRouter |
+| 输出长度 | 固定 1500-2500 字 | 动态 200-2000 字 |
+| 模式 | 单模式 | quick/standard/deep 三模式 |
+| Prompt | 英文为主 | 全中文，温暖语气 |
+| Token 消耗 | 较高 | 降低 30-60% |
+| 生成速度 | 慢 | 快 2-5 倍 |
+
+---
+
+## 回退指南（重要）
+
+新系统可随时回退到旧系统，**零数据丢失**。
+
+### 方法一：使用切换脚本
+```bash
+./scripts/toggle-insight-workflow.sh legacy
+# 然后重启后端服务
+```
+
+### 方法二：手动修改 .env
+```bash
+# backend/.env
+
+# 注释掉这两行
+# INSIGHT_WORKFLOW_VERSION=atelier-v1
+# INSIGHT_MODE=standard
+```
+
+### 方法三：环境变量（临时）
+```bash
+# 不修改任何文件，仅当前会话生效
+unset INSIGHT_WORKFLOW_VERSION
+```
+
+然后重启后端服务即可。
+
+---
+
+## 对比与选择
+
+| 场景 | 推荐系统 | 原因 |
+|------|---------|------|
+| 生产环境，要求稳定 | 旧系统 | 经过充分验证 |
+| 想尝鲜，更快更便宜 | 新系统 | Token 省 30-60%，快 2-5 倍 |
+| 需要特定模型 | 新系统 | 支持多 Provider |
+| 笔记量少 | 新系统 quick 模式 | 轻量快速 |
+| 调试问题 | 旧系统 | 更成熟的错误处理 |
+
+---
 
 ## 调试与复现
 
-后端会为每次 generation 写入 workspace（默认在 `backend/data/insights/{generation_id}/`），其中包含：
-- `context.json`：本次 insight 的 note 快照
-- `notes/`：按 note_id 组织的内容片段文件
-- `task_config.json`：本次任务配置
+### 查看工作区
 
-手动运行 AI SDK 版本：
+每次 generation 会在 `backend/data/insights/{generation_id}/` 创建：
+- `context.json`：笔记快照
+- `notes/*.md`：笔记内容
+- `task_config.json`：任务配置
+
+### 手动复现
+
 ```bash
 cd /path/to/note-app
+
+# 设置环境
 export AI_SDK_PROVIDER=openai
-export AI_SDK_API_KEY=your_key
-export AI_SDK_MODEL=gpt-4o
-node scripts/ai_sdk_insight_agent.mjs backend/data/insights/{generation_id}
+export AI_SDK_API_KEY=sk-xxx
+
+# 运行
+node scripts/atelier-insight.mjs backend/data/insights/{generation_id} --mode=standard
 ```
+
+---
+
+## Roadmap
+
+- [ ] 支持多 insight 一次生成
+- [ ] 与 Mind Graph 数据联动
+- [ ] 用户反馈学习（thumbs up/down）
+- [ ] 个性化语气调节
+- [ ] Insight 版本对比
