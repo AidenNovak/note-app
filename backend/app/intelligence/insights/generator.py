@@ -1,7 +1,7 @@
-"""Direct OpenRouter-based insight generation with mind connection context.
+"""Direct insight generation using AI SDK structured output.
 
-Replaces the Claude SDK agent approach with a single structured prompt that
-produces a 1500-2000 word report with charts/sections.
+Replaces the manual OpenRouter HTTP + JSON parsing approach with
+ai-sdk-python generate_object for reliable structured output.
 """
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -27,6 +26,8 @@ from app.models import (
     NoteSimilarity,
     TaskStatus,
 )
+from app.intelligence.insights.llm import get_model, generate_report
+from app.intelligence.insights.schemas_ai import InsightReportOutput
 
 logger = logging.getLogger(__name__)
 
@@ -151,99 +152,12 @@ async def _fetch_context(db: AsyncSession, user_id: str) -> dict:
     }
 
 
-async def _call_openrouter(system: str, user_msg: str) -> dict:
-    """Call OpenRouter chat completion and parse JSON response."""
-    async with httpx.AsyncClient(timeout=120, verify=False) as client:
-        resp = await client.post(
-            f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.OPENROUTER_MODEL,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_msg},
-                ],
-                "max_tokens": 8000,
-                "temperature": 0.7,
-                "response_format": {"type": "json_object"},
-            },
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        raw = data["choices"][0]["message"]["content"]
-
-    # Parse JSON (strip markdown fences if present)
-    raw = raw.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3]
-        raw = raw.strip()
-
-    return json.loads(raw)
-
-async def _call_openrouter_stream(system: str, user_msg: str, generation_id: str) -> dict:
-    """Call OpenRouter with streaming, broadcasting chunks via SSE."""
-    from app.intelligence.insights.service import broadcast_log
-
-    collected = ""
-    async with httpx.AsyncClient(timeout=120, verify=False) as client:
-        async with client.stream(
-            "POST",
-            f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.OPENROUTER_MODEL,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_msg},
-                ],
-                "max_tokens": 8000,
-                "temperature": 0.7,
-                "response_format": {"type": "json_object"},
-                "stream": True,
-            },
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    token = delta.get("content", "")
-                    if token:
-                        collected += token
-                        await broadcast_log(generation_id, {
-                            "type": "token",
-                            "token": token,
-                        })
-                except (json.JSONDecodeError, IndexError, KeyError):
-                    continue
-
-    # Parse collected JSON
-    raw = collected.strip()
-    if raw.startswith("```"):
-        raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
-        if raw.endswith("```"):
-            raw = raw[:-3]
-        raw = raw.strip()
-
-    return json.loads(raw)
+# ── LLM calls now handled by ai-sdk-python (see llm.py) ──
 
 # PLACEHOLDER_GENERATE
 
 async def generate_insight_report(db: AsyncSession, generation: InsightGeneration) -> None:
-    """Generate a full insight report and persist it to the database."""
+    """Generate a full insight report using AI SDK structured output."""
     from app.intelligence.insights.service import broadcast_log
     from app.intelligence.insights.share_cards import build_share_card_payload
 
@@ -281,7 +195,11 @@ async def generate_insight_report(db: AsyncSession, generation: InsightGeneratio
 
     await broadcast_log(generation_id, {"type": "progress", "message": "Generating report with AI..."})
 
-    payload = await _call_openrouter_stream(REPORT_SYSTEM_PROMPT, user_prompt, generation_id)
+    # Use AI SDK generate_object for structured output
+    report_obj: InsightReportOutput = await generate_report(
+        system=REPORT_SYSTEM_PROMPT,
+        user_prompt=user_prompt,
+    )
 
     await broadcast_log(generation_id, {"type": "progress", "message": "Saving report..."})
 
@@ -289,21 +207,20 @@ async def generate_insight_report(db: AsyncSession, generation: InsightGeneratio
     generated_at = datetime.now(timezone.utc)
     report_id = str(uuid.uuid4())
 
-    # Build share card
-    evidence_items = payload.get("evidence_items", [])
-    action_items = payload.get("action_items", [])
+    evidence_items = [ev.model_dump() for ev in report_obj.evidence_items]
+    action_items = [act.model_dump() for act in report_obj.action_items]
 
-    share_card_data = build_share_card_payload(
-        report_type=payload.get("type", "report"),
-        title=payload.get("title", "Insight Report"),
-        description=payload.get("description", ""),
-        confidence=float(payload.get("confidence", 0.7)),
-        importance_score=float(payload.get("importance_score", 0.7)),
-        novelty_score=float(payload.get("novelty_score", 0.5)),
+    build_share_card_payload(
+        report_type=report_obj.type,
+        title=report_obj.title,
+        description=report_obj.description,
+        confidence=report_obj.confidence,
+        importance_score=report_obj.importance_score,
+        novelty_score=report_obj.novelty_score,
         generated_at=generated_at,
         evidence_items=evidence_items,
         action_items=action_items,
-        raw_share_card=payload.get("share_card"),
+        raw_share_card=report_obj.share_card.model_dump() if report_obj.share_card else None,
     )
 
     # Validate note_ids in evidence
@@ -315,22 +232,23 @@ async def generate_insight_report(db: AsyncSession, generation: InsightGeneratio
             nid = next(iter(valid_note_ids))
         validated_evidence.append({**ev, "note_id": nid})
 
+    report_dict = report_obj.model_dump()
     db.add(InsightReport(
         id=report_id,
         generation_id=generation_id,
         user_id=user_id,
-        type=payload.get("type", "report"),
+        type=report_obj.type,
         status="published",
-        title=payload.get("title", "Insight Report"),
-        description=payload.get("description", ""),
+        title=report_obj.title,
+        description=report_obj.description,
         report_version=1,
-        confidence=float(payload.get("confidence", 0.7)),
-        importance_score=float(payload.get("importance_score", 0.7)),
-        novelty_score=float(payload.get("novelty_score", 0.5)),
+        confidence=report_obj.confidence,
+        importance_score=report_obj.importance_score,
+        novelty_score=report_obj.novelty_score,
         review_summary=None,
         card_rank=1,
-        report_markdown=payload.get("report_markdown", ""),
-        report_json=json.dumps(payload, ensure_ascii=False),
+        report_markdown=report_obj.report_markdown,
+        report_json=json.dumps(report_dict, ensure_ascii=False),
         source_note_ids=json.dumps([n["id"] for n in ctx["notes"]]),
         generated_at=generated_at,
     ))
@@ -359,7 +277,7 @@ async def generate_insight_report(db: AsyncSession, generation: InsightGeneratio
     generation.total_reports = 1
     generation.completed_at = generated_at
     generation.is_active = True
-    generation.summary = f"Generated insight report: {payload.get('title', 'Report')}"
+    generation.summary = f"Generated insight report: {report_obj.title}"
     generation.error = None
 
     await db.commit()

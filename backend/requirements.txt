@@ -40,6 +40,7 @@ faker==33.1.0
 # AI
 anthropic>=0.52.0
 openai>=1.30.0
+ai-sdk-python>=0.1.1
 
 # ML / NLP
 scikit-learn==1.6.1

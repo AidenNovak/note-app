@@ -3,6 +3,8 @@
 s0 reads the full note manifest, groups notes into sets of ~5 with unique analysis angles,
 ensuring every note is selected at least once. Each sub-agent independently generates an
 insight report for its assigned group.
+
+Uses ai-sdk-python for structured output (generate_object) and streaming.
 """
 from __future__ import annotations
 
@@ -12,7 +14,6 @@ import math
 import uuid
 from datetime import datetime, timezone
 
-import httpx
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -24,6 +25,8 @@ from app.models import (
     InsightReport,
     TaskStatus,
 )
+from app.intelligence.insights.llm import get_agent_model, generate_groups, generate_report
+from app.intelligence.insights.schemas_ai import InsightReportOutput, NoteGroupOutput
 from app.intelligence.insights.workspace_agent import (
     _fetch_all_notes,
     _fetch_connections,
@@ -118,115 +121,29 @@ MUST be a standalone 50-100 word summary.
 # PLACEHOLDER_REST_OF_FILE
 
 
-async def _call_llm(messages: list[dict], generation_id: str, stream_prefix: str = "", max_tokens: int | None = None) -> str:
-    """Call OpenRouter and stream tokens."""
-    from app.intelligence.insights.service import broadcast_log
-
-    collected = ""
-    async with httpx.AsyncClient(timeout=settings.AGENT_REQUEST_TIMEOUT, verify=False) as client:
-        async with client.stream(
-            "POST",
-            f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.AGENT_MODEL,
-                "messages": messages,
-                "max_tokens": max_tokens or settings.AGENT_MAX_TOKENS_PER_TURN,
-                "temperature": 0.7,
-                "stream": True,
-            },
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    token = delta.get("content", "")
-                    if token:
-                        collected += token
-                        await broadcast_log(generation_id, {
-                            "type": "token", "token": token, "prefix": stream_prefix,
-                        })
-                except (json.JSONDecodeError, IndexError, KeyError):
-                    continue
-    return collected
+# ── LLM calls are now via ai-sdk-python (see llm.py) ──
 
 
-def _parse_json_response(text: str) -> object:
-    """Extract JSON from LLM response, handling markdown fences and trailing text."""
-    cleaned = text.strip()
-    # Strip markdown code fences
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3]
-        cleaned = cleaned.strip()
-
-    # Try direct parse first
-    try:
-        return json.loads(cleaned)
-    except json.JSONDecodeError:
-        pass
-
-    # Find balanced JSON object or array using bracket counting
-    for start_char, end_char in [("{", "}"), ("[", "]")]:
-        start = cleaned.find(start_char)
-        if start == -1:
-            continue
-        depth = 0
-        in_string = False
-        escape_next = False
-        for i in range(start, len(cleaned)):
-            ch = cleaned[i]
-            if escape_next:
-                escape_next = False
-                continue
-            if ch == "\\":
-                escape_next = True
-                continue
-            if ch == '"' and not escape_next:
-                in_string = not in_string
-                continue
-            if in_string:
-                continue
-            if ch == start_char:
-                depth += 1
-            elif ch == end_char:
-                depth -= 1
-                if depth == 0:
-                    return json.loads(cleaned[start:i + 1])
-
-    raise ValueError(f"No valid JSON found in response (length={len(cleaned)})")
-
-
-def _ensure_coverage(groups: list[dict], all_note_ids: set[str]) -> list[dict]:
+def _ensure_coverage(groups: list[NoteGroupOutput], all_note_ids: set[str]) -> list[NoteGroupOutput]:
     """Ensure every note appears in at least one group."""
     covered = set()
     for group in groups:
-        covered.update(group.get("note_ids", []))
+        covered.update(group.note_ids)
     uncovered = all_note_ids - covered
     if not uncovered:
         return groups
-    groups.append({
-        "angle": "Miscellaneous notes that reveal overlooked patterns and hidden themes",
-        "note_ids": list(uncovered),
-        "theme": "Hidden Patterns",
-    })
+    groups.append(NoteGroupOutput(
+        angle="Miscellaneous notes that reveal overlooked patterns and hidden themes",
+        note_ids=list(uncovered),
+        theme="Hidden Patterns",
+    ))
     return groups
 
 # PLACEHOLDER_MAIN_FUNC
 
 
 async def run_multi_agent(db: AsyncSession, generation: InsightGeneration) -> None:
-    """Main multi-agent orchestration loop."""
+    """Main multi-agent orchestration loop using AI SDK structured output."""
     from app.intelligence.insights.service import broadcast_log
 
     user_id = generation.user_id
@@ -248,43 +165,27 @@ async def run_multi_agent(db: AsyncSession, generation: InsightGeneration) -> No
         "message": f"Workspace loaded: {len(all_notes)} notes, {len(connections)} connections",
     })
 
-    # s0 orchestrator — group notes (limit to S0_MAX_NOTES most recent for token budget)
+    # ── s0 orchestrator: group notes via generate_object ──
     s0_notes = all_notes[:S0_MAX_NOTES] if len(all_notes) > S0_MAX_NOTES else all_notes
     s0_note_ids = {n["id"] for n in s0_notes}
     num_groups = min(MAX_GROUPS, max(3, TARGET_REPORTS))
     group_size = max(3, math.ceil(len(s0_notes) / num_groups))
+
     manifest_lines = [f"# Note Workspace — {len(s0_notes)} notes\n"]
     for i, n in enumerate(s0_notes, 1):
         tags = ", ".join(n["tags"]) if n["tags"] else "—"
         manifest_lines.append(f"| {i} | {n['id']} | {n['title'][:60]} | {tags} | {n['word_count']} words |")
 
-    s0_messages = [
-        {"role": "system", "content": S0_SYSTEM_PROMPT.format(num_groups=num_groups, group_size=group_size)},
-        {"role": "user", "content": "\n".join(manifest_lines) + f"\n\nPlease create exactly {num_groups} groups."},
-    ]
-
     await broadcast_log(generation_id, {"type": "progress", "message": f"s0 orchestrator analyzing {len(s0_notes)} notes..."})
 
-    s0_response = await _call_llm(s0_messages, generation_id, stream_prefix="[s0] ", max_tokens=S0_MAX_TOKENS)
-    logger.info("s0 raw response (first 500 chars): %s", s0_response[:500])
-    try:
-        groups = _parse_json_response(s0_response)
-    except ValueError as e:
-        logger.error("s0 JSON parse failed: %s — raw: %s", e, s0_response[:300])
-        raise RuntimeError(f"s0 orchestrator JSON parse failed: {e}")
-    logger.info("s0 parsed type=%s value=%s", type(groups).__name__, str(groups)[:300])
-    # Handle wrapped response like {"groups": [...]}
-    if isinstance(groups, dict):
-        for key in ("groups", "data", "result"):
-            if key in groups and isinstance(groups[key], list):
-                groups = groups[key]
-                break
-    if not isinstance(groups, list):
-        raise RuntimeError("s0 orchestrator did not return a valid group array")
+    s0_system = S0_SYSTEM_PROMPT.format(num_groups=num_groups, group_size=group_size)
+    s0_user = "\n".join(manifest_lines) + f"\n\nPlease create exactly {num_groups} groups."
+
+    group_list = await generate_groups(system=s0_system, user_prompt=s0_user)
+    groups = list(group_list.groups)
+    logger.info("s0 returned %d groups", len(groups))
 
     groups = _ensure_coverage(groups, s0_note_ids)
-
-    # Hard cap: keep only the first MAX_GROUPS groups
     if len(groups) > MAX_GROUPS:
         groups = groups[:MAX_GROUPS]
 
@@ -292,18 +193,18 @@ async def run_multi_agent(db: AsyncSession, generation: InsightGeneration) -> No
         "type": "agent_turn", "turn": 1,
         "notes_read": len(all_notes), "notes_total": len(all_notes),
         "message": f"s0 created {len(groups)} analysis groups",
-        "groups": [{"theme": g.get("theme", ""), "angle": g.get("angle", ""), "count": len(g.get("note_ids", []))} for g in groups],
+        "groups": [{"theme": g.theme, "angle": g.angle, "count": len(g.note_ids)} for g in groups],
     })
 
-    # Run sub-agents
-    reports: list[dict] = []
+    # ── Run sub-agents via generate_object for structured reports ──
+    reports: list[tuple[InsightReportOutput, list[str]]] = []
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     for idx, group in enumerate(groups):
         group_num = idx + 1
-        angle = group.get("angle", "General analysis")
-        theme = group.get("theme", f"Group {group_num}")
-        group_note_ids = group.get("note_ids", [])
+        angle = group.angle
+        theme = group.theme
+        group_note_ids = group.note_ids
 
         await broadcast_log(generation_id, {
             "type": "group_started", "group": group_num, "total_groups": len(groups),
@@ -319,36 +220,28 @@ async def run_multi_agent(db: AsyncSession, generation: InsightGeneration) -> No
                         f"### {note['title']} (ID: {nid})\nTags: {', '.join(note['tags']) or '—'}\n\n{note['content']}\n"
                     )
 
-            sub_messages = [
-                {"role": "system", "content": SUB_AGENT_SYSTEM_PROMPT.format(date=today)},
-                {"role": "user", "content": f"## Analysis Angle: {angle}\n\n## Theme: {theme}\n\n## Notes ({len(group_note_ids)} total)\n\n" + "\n---\n".join(note_content_parts)},
-            ]
+            sub_system = SUB_AGENT_SYSTEM_PROMPT.format(date=today)
+            sub_user = (
+                f"## Analysis Angle: {angle}\n\n## Theme: {theme}\n\n"
+                f"## Notes ({len(group_note_ids)} total)\n\n"
+                + "\n---\n".join(note_content_parts)
+            )
 
-            sub_response = await _call_llm(sub_messages, generation_id, stream_prefix=f"[s{group_num}] ")
+            report_obj = await generate_report(system=sub_system, user_prompt=sub_user)
+            reports.append((report_obj, group_note_ids))
 
-            report_payload = {}
-            try:
-                report_payload = _parse_json_response(sub_response)
-                if isinstance(report_payload, dict):
-                    report_payload["_group_note_ids"] = group_note_ids
-                    reports.append(report_payload)
-                else:
-                    logger.warning("Sub-agent s%d returned non-dict: %s", group_num, type(report_payload))
-            except (json.JSONDecodeError, ValueError) as parse_err:
-                logger.warning(
-                    "Sub-agent s%d JSON parse failed: %s\nResponse (first 500 chars): %s",
-                    group_num, parse_err, sub_response[:500],
-                )
+            await broadcast_log(generation_id, {
+                "type": "group_completed", "group": group_num, "total_groups": len(groups),
+                "theme": theme,
+                "title": report_obj.title,
+                "description": report_obj.description,
+            })
         except Exception as sub_err:
             logger.warning("Sub-agent s%d failed: %s", group_num, sub_err)
-            report_payload = {}
-
-        await broadcast_log(generation_id, {
-            "type": "group_completed", "group": group_num, "total_groups": len(groups),
-            "theme": theme,
-            "title": report_payload.get("title", "") if isinstance(report_payload, dict) else "",
-            "description": report_payload.get("description", "") if isinstance(report_payload, dict) else "",
-        })
+            await broadcast_log(generation_id, {
+                "type": "group_completed", "group": group_num, "total_groups": len(groups),
+                "theme": theme, "title": "", "description": "",
+            })
 
     if not reports:
         raise RuntimeError("No sub-agents produced valid reports")
@@ -360,7 +253,7 @@ async def run_multi_agent(db: AsyncSession, generation: InsightGeneration) -> No
 
 async def _persist_multi_reports(
     db: AsyncSession, generation: InsightGeneration,
-    reports: list[dict], all_notes: list[dict],
+    reports: list[tuple[InsightReportOutput, list[str]]], all_notes: list[dict],
 ) -> None:
     """Persist multiple reports from multi-agent generation."""
     from app.intelligence.insights.service import broadcast_log
@@ -377,23 +270,22 @@ async def _persist_multi_reports(
         .values(is_active=False)
     )
 
-    for idx, payload in enumerate(reports, 1):
+    for idx, (report_obj, group_note_ids) in enumerate(reports, 1):
         report_id = str(uuid.uuid4())
-        group_note_ids = payload.pop("_group_note_ids", [])
-        evidence_items = payload.get("evidence_items", [])
-        action_items = payload.get("action_items", [])
+        evidence_items = [ev.model_dump() for ev in report_obj.evidence_items]
+        action_items = [act.model_dump() for act in report_obj.action_items]
 
         build_share_card_payload(
-            report_type=payload.get("type", "report"),
-            title=payload.get("title", "Insight Report"),
-            description=payload.get("description", ""),
-            confidence=float(payload.get("confidence", 0.7)),
-            importance_score=float(payload.get("importance_score", 0.7)),
-            novelty_score=float(payload.get("novelty_score", 0.5)),
+            report_type=report_obj.type,
+            title=report_obj.title,
+            description=report_obj.description,
+            confidence=report_obj.confidence,
+            importance_score=report_obj.importance_score,
+            novelty_score=report_obj.novelty_score,
             generated_at=generated_at,
             evidence_items=evidence_items,
             action_items=action_items,
-            raw_share_card=payload.get("share_card"),
+            raw_share_card=report_obj.share_card.model_dump() if report_obj.share_card else None,
         )
 
         validated_evidence = []
@@ -403,18 +295,19 @@ async def _persist_multi_reports(
                 nid = group_note_ids[0]
             validated_evidence.append({**ev, "note_id": nid})
 
+        report_dict = report_obj.model_dump()
         db.add(InsightReport(
             id=report_id, generation_id=generation_id, user_id=user_id,
-            type=payload.get("type", "report"), status="published",
-            title=payload.get("title", "Insight Report"),
-            description=payload.get("description", ""),
+            type=report_obj.type, status="published",
+            title=report_obj.title,
+            description=report_obj.description,
             report_version=1,
-            confidence=float(payload.get("confidence", 0.7)),
-            importance_score=float(payload.get("importance_score", 0.7)),
-            novelty_score=float(payload.get("novelty_score", 0.5)),
+            confidence=report_obj.confidence,
+            importance_score=report_obj.importance_score,
+            novelty_score=report_obj.novelty_score,
             review_summary=None, card_rank=idx,
-            report_markdown=payload.get("report_markdown", ""),
-            report_json=json.dumps(payload, ensure_ascii=False),
+            report_markdown=report_obj.report_markdown,
+            report_json=json.dumps(report_dict, ensure_ascii=False),
             source_note_ids=json.dumps(group_note_ids),
             generated_at=generated_at,
         ))
@@ -440,7 +333,7 @@ async def _persist_multi_reports(
     generation.total_reports = len(reports)
     generation.completed_at = generated_at
     generation.is_active = True
-    generation.workflow_version = "multi-agent-v1"
+    generation.workflow_version = "multi-agent-v2"
     generation.summary = f"Generated {len(reports)} insight reports from {len(reports)} analysis groups"
     generation.error = None
 

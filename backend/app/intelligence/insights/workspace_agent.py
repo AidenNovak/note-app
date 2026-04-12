@@ -1,6 +1,6 @@
 """Workspace Agent — multi-turn agent loop that reads ALL notes before generating insight.
 
-Uses OpenRouter API with tool_call XML parsing. The AI receives a manifest of all notes,
+Uses AI SDK for model routing and streaming. The AI receives a manifest of all notes,
 reads them in batches via read_notes tool, then calls finish with the final report.
 """
 from __future__ import annotations
@@ -11,7 +11,6 @@ import re
 import uuid
 from datetime import datetime, timezone
 
-import httpx
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -26,6 +25,7 @@ from app.models import (
     Note,
     TaskStatus,
 )
+from app.intelligence.insights.llm import get_agent_model, stream_messages_and_broadcast
 
 logger = logging.getLogger(__name__)
 
@@ -186,49 +186,7 @@ def _extract_tool_calls(text: str) -> list[dict]:
 
 
 
-async def _call_openrouter_agent(
-    messages: list[dict], generation_id: str
-) -> str:
-    """Call OpenRouter with streaming, broadcast tokens, return full text."""
-    from app.intelligence.insights.service import broadcast_log
-
-    collected = ""
-    async with httpx.AsyncClient(timeout=settings.AGENT_REQUEST_TIMEOUT, verify=False) as client:
-        async with client.stream(
-            "POST",
-            f"{settings.OPENROUTER_BASE_URL}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": settings.AGENT_MODEL,
-                "messages": messages,
-                "max_tokens": settings.AGENT_MAX_TOKENS_PER_TURN,
-                "temperature": 0.7,
-                "stream": True,
-            },
-        ) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    token = delta.get("content", "")
-                    if token:
-                        collected += token
-                        await broadcast_log(generation_id, {
-                            "type": "token",
-                            "token": token,
-                        })
-                except (json.JSONDecodeError, IndexError, KeyError):
-                    continue
-    return collected
+# ── LLM streaming now handled by ai-sdk-python (see llm.py) ──
 
 
 def _maybe_compress_history(messages: list[dict]) -> list[dict]:
@@ -292,7 +250,10 @@ async def run_workspace_agent(db: AsyncSession, generation: InsightGeneration) -
     for turn in range(1, max_turns + 1):
         messages = _maybe_compress_history(messages)
 
-        assistant_text = await _call_openrouter_agent(messages, generation_id)
+        assistant_text = await stream_messages_and_broadcast(
+            messages=messages,
+            generation_id=generation_id,
+        )
         messages.append({"role": "assistant", "content": assistant_text})
 
         tool_calls = _extract_tool_calls(assistant_text)
