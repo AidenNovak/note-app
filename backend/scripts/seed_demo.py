@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seed 30 demo notes, generate insights via Claude SDK, and share 2 to Ground.
+"""Seed 30 demo notes, generate insights, and share 2 to Ground.
 
 Usage:
     python backend/scripts/seed_demo.py [--base-url http://localhost:8000]
@@ -603,7 +603,7 @@ def main():
     note_ids = _seed_notes(client, headers)
 
     if not args.skip_insights:
-        print("\n3. Generating insights (Claude SDK)")
+        print("\n3. Generating insights")
         _generate_insights(client, headers)
     else:
         print("\n3. Skipping insight generation")

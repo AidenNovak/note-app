@@ -81,7 +81,7 @@ class Settings(BaseSettings):
     ]
 
     # AI Provider (legacy, will be deprecated)
-    AI_PROVIDER: str = "claude-sdk"  # claude-sdk | openrouter | ai-sdk
+    AI_PROVIDER: str = "openrouter"  # openrouter | ai-sdk
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     OPENROUTER_MODEL: str = "minimax/minimax-m2.7"
@@ -113,7 +113,6 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
 
     INSIGHTS_WORKSPACE_ROOT: str = "./data/insights"
-    CLAUDE_AGENT_SDK_ROOT: str = str(Path.home() / "agent-sdk")
     INSIGHT_MAX_CONTEXT_NOTES: int = 12
     INSIGHT_MAX_NOTE_CHARS: int = 4000
     INSIGHT_AGENT_MAX_TURNS: int = 30
