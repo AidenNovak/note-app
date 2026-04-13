@@ -470,7 +470,7 @@ async def _voice_to_text(file_id: str | None, db: AsyncSession) -> str:
 
 
 async def _image_to_markdown(file_id: str | None, db: AsyncSession) -> str:
-    """Describe image content via Claude Vision."""
+    """Describe image content via OpenRouter vision model."""
     if not file_id:
         return "> No image file provided.\n"
 
@@ -481,10 +481,8 @@ async def _image_to_markdown(file_id: str | None, db: AsyncSession) -> str:
 
     storage_url = _get_file_url(file_record.storage_path)
 
-    import anthropic
-    api_key = os.environ.get("ANTHROPIC_API_KEY", settings.ANTHROPIC_API_KEY)
-    if not api_key:
-        return f"> [Image description pending — no API key configured]\n> File: {file_record.filename}\n"
+    if not settings.OPENROUTER_API_KEY:
+        return f"> [Image description pending — no OPENROUTER_API_KEY configured]\n> File: {file_record.filename}\n"
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         img_resp = await client.get(storage_url)
@@ -495,20 +493,29 @@ async def _image_to_markdown(file_id: str | None, db: AsyncSession) -> str:
     image_data = base64.b64encode(img_resp.content).decode("utf-8")
     media_type = file_record.mime_type if file_record.mime_type.startswith("image/") else "image/jpeg"
 
-    aclient = anthropic.AsyncAnthropic(api_key=api_key)
-    message = await aclient.messages.create(
-        model="claude-sonnet-4-20250514",
-        max_tokens=1024,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "image", "source": {"type": "base64", "media_type": media_type, "data": image_data}},
-                {"type": "text", "text": "Describe this image in detail. Write the description as clean markdown suitable for a note. Include any text visible in the image."},
-            ],
-        }],
-    )
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.post(
+            f"{settings.OPENROUTER_BASE_URL}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": settings.AI_MODEL,
+                "max_tokens": 1024,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:{media_type};base64,{image_data}"}},
+                        {"type": "text", "text": "Describe this image in detail. Write the description as clean markdown suitable for a note. Include any text visible in the image."},
+                    ],
+                }],
+            },
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
-    description = message.content[0].text if message.content else ""
+    description = data["choices"][0]["message"]["content"] if data.get("choices") else ""
     return f"# Image Note\n\n{description}\n"
 
 

@@ -92,7 +92,6 @@ class Settings(BaseSettings):
 
     # Provider-specific keys (only for specialized tasks, NOT for general LLM)
     OPENAI_API_KEY: str = ""       # Whisper audio transcription
-    ANTHROPIC_API_KEY: str = ""    # Claude Vision image description
 
     # Embedding (独立于语言模型)
     EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
