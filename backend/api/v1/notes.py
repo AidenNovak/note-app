@@ -351,6 +351,7 @@ async def create_note(
     return _build_note_out(created_note)
 
 
+@router.patch("/{note_id}", response_model=NoteOut)
 @router.put("/{note_id}", response_model=NoteOut)
 async def update_note(
     note_id: str,

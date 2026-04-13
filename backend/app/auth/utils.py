@@ -13,7 +13,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
+from app.config import running_on_vercel, settings
 from app.database import get_db
 from app.models import User
 
@@ -152,7 +152,8 @@ async def get_current_user(
                 return bridged
 
     # Dev mode: auto-create and return a dev user so the app works without login
-    if settings.APP_ENV == "development":
+    # Guard: only allow on truly local requests to prevent accidental production bypass
+    if settings.APP_ENV == "development" and not running_on_vercel():
         return await _get_or_create_dev_user(db)
 
     raise credentials_exception
