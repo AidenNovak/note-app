@@ -80,36 +80,21 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8083",
     ]
 
-    # AI Provider (legacy, will be deprecated)
-    AI_PROVIDER: str = "openrouter"  # openrouter | ai-sdk
+    # ── Unified AI Configuration ──────────────────────────
+    # All LLM calls go through OpenRouter. Change AI_MODEL to swap globally.
+    # Browse models: https://openrouter.ai/models
     OPENROUTER_API_KEY: str = ""
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-    OPENROUTER_MODEL: str = "minimax/minimax-m2.7"
-    ANTHROPIC_API_KEY: str = ""
-    OPENAI_API_KEY: str = ""
-    AI_MAX_TOKENS: int = 1000
+    AI_MODEL: str = "moonshotai/kimi-k2.5"
+    AI_MAX_TOKENS: int = 4096
     AI_TEMPERATURE: float = 0.7
-    
-    # Atélier AI SDK Configuration (recommended)
-    # Provider: openai | anthropic | google | openrouter
-    AI_SDK_PROVIDER: str = "openai"
-    # Model depends on provider:
-    #   openai: gpt-4o-mini (fast), gpt-4o (quality)
-    #   anthropic: claude-3-haiku (fast), claude-3-5-sonnet (quality)
-    #   google: gemini-1.5-flash (fast), gemini-1.5-pro (quality)
-    #   openrouter: openai/gpt-4o-mini, anthropic/claude-3-5-sonnet, etc.
-    AI_SDK_MODEL: str = "gpt-4o-mini"
-    # API Key (falls back to OPENAI_API_KEY or OPENROUTER_API_KEY if not set)
-    AI_SDK_API_KEY: str = ""
-    # Base URL (only needed for openrouter or custom endpoints)
-    AI_SDK_BASE_URL: str = ""
-    # Mode: quick (200-400字) | standard (600-1000字) | deep (1500-2000字)
-    AI_SDK_MODE: str = "standard"
-    AI_SDK_MAX_TOKENS: int = 2500
-    AI_SDK_TEMPERATURE: float = 0.7
-    AI_SDK_STREAMING: bool = True
+    AI_STREAMING: bool = True
 
-    # Embedding
+    # Provider-specific keys (only for specialized tasks, NOT for general LLM)
+    OPENAI_API_KEY: str = ""       # Whisper audio transcription
+    ANTHROPIC_API_KEY: str = ""    # Claude Vision image description
+
+    # Embedding (独立于语言模型)
     EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
 
     INSIGHTS_WORKSPACE_ROOT: str = "./data/insights"
@@ -118,11 +103,10 @@ class Settings(BaseSettings):
     INSIGHT_AGENT_MAX_TURNS: int = 30
 
     # Workspace Agent
-    AGENT_MODEL: str = "anthropic/claude-sonnet-4"
     AGENT_MAX_TURNS: int = 25
     AGENT_MAX_TOKENS_PER_TURN: int = 4096
     AGENT_REQUEST_TIMEOUT: int = 180
-    AGENT_MAX_NOTES: int = 50  # Max notes the workspace agent will analyze
+    AGENT_MAX_NOTES: int = 50
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

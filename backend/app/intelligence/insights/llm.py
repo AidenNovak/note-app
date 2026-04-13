@@ -1,14 +1,12 @@
 """Unified LLM layer built on ai-sdk-python.
 
-Provides provider-agnostic model initialization and convenience wrappers
-for generating insight reports and note groupings.
+All LLM calls route through OpenRouter using the single AI_MODEL config.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from functools import partial
 from typing import Type, TypeVar
 
 from ai_sdk import generate_text, stream_text
@@ -32,70 +30,28 @@ T = TypeVar("T", bound=BaseModel)
 # ── Provider / Model Factory ───────────────────────────
 
 
-def _resolve_api_key() -> str:
-    """Resolve API key with fallback chain."""
-    if settings.AI_SDK_API_KEY:
-        return settings.AI_SDK_API_KEY
-    if settings.AI_SDK_PROVIDER == "openrouter" and settings.OPENROUTER_API_KEY:
-        return settings.OPENROUTER_API_KEY
-    if settings.AI_SDK_PROVIDER == "openai" and settings.OPENAI_API_KEY:
-        return settings.OPENAI_API_KEY
-    if settings.AI_SDK_PROVIDER == "anthropic" and settings.ANTHROPIC_API_KEY:
-        return settings.ANTHROPIC_API_KEY
-    return settings.OPENROUTER_API_KEY or settings.OPENAI_API_KEY or ""
-
-
-def _resolve_base_url() -> str | None:
-    """Resolve base URL (only needed for OpenRouter / custom endpoints)."""
-    if settings.AI_SDK_BASE_URL:
-        return settings.AI_SDK_BASE_URL
-    if settings.AI_SDK_PROVIDER == "openrouter":
-        return settings.OPENROUTER_BASE_URL
-    return None
-
-
 def get_model(
     model_name: str | None = None,
-    provider: str | None = None,
 ) -> LanguageModel:
-    """Create an AI SDK model instance based on config.
+    """Create an AI SDK model instance via OpenRouter.
 
-    Supports openai, anthropic, google, and openrouter (via OpenAI-compatible endpoint).
+    All LLM calls are routed through OpenRouter using the unified AI_MODEL config.
+    Pass *model_name* to override for a specific call.
     """
-    provider = provider or settings.AI_SDK_PROVIDER
-    model_name = model_name or settings.AI_SDK_MODEL
-    api_key = _resolve_api_key()
+    model_name = model_name or settings.AI_MODEL
+    api_key = settings.OPENROUTER_API_KEY
 
-    if provider == "anthropic":
-        from ai_sdk import anthropic
-        return anthropic(model_name, api_key=api_key)
-
-    if provider in ("openai", "openrouter"):
-        base_url = _resolve_base_url()
-        if base_url:
-            # OpenRouter or custom endpoint: create OpenAIModel with custom client
-            model = OpenAIModel(model_name, api_key=api_key)
-            model._client = _openai_lib.OpenAI(api_key=api_key, base_url=base_url)
-            return model
-        from ai_sdk import openai
-        return openai(model_name, api_key=api_key)
-
-    # Fallback: treat as OpenAI-compatible
-    from ai_sdk import openai
-    return openai(model_name, api_key=api_key)
+    model = OpenAIModel(model_name, api_key=api_key)
+    model._client = _openai_lib.OpenAI(
+        api_key=api_key,
+        base_url=settings.OPENROUTER_BASE_URL,
+    )
+    return model
 
 
 def get_agent_model() -> LanguageModel:
-    """Get model for agent workflows (workspace-agent, multi-agent).
-
-    Uses AGENT_MODEL config which may differ from the default AI_SDK_MODEL.
-    """
-    agent_model = settings.AGENT_MODEL
-    # AGENT_MODEL is in "provider/model" format (e.g. "anthropic/claude-sonnet-4")
-    if "/" in agent_model:
-        # Route through OpenRouter which understands provider/model format
-        return get_model(model_name=agent_model, provider="openrouter")
-    return get_model(model_name=agent_model)
+    """Get model for agent workflows. Uses the same unified AI_MODEL."""
+    return get_model()
 
 
 # ── JSON Parsing ───────────────────────────────────────
@@ -186,8 +142,8 @@ async def generate_report(
         model=model,
         system=system,
         prompt=user_prompt,
-        max_tokens=settings.AI_SDK_MAX_TOKENS,
-        temperature=settings.AI_SDK_TEMPERATURE,
+        max_tokens=settings.AI_MAX_TOKENS,
+        temperature=settings.AI_TEMPERATURE,
     )
     logger.info("generate_report: finish_reason=%s, text_len=%d, usage=%s",
                 result.finish_reason, len(result.text) if result.text else 0, result.usage)
@@ -214,8 +170,8 @@ async def generate_groups(
         model=model,
         system=system,
         prompt=user_prompt,
-        max_tokens=settings.AI_SDK_MAX_TOKENS,
-        temperature=settings.AI_SDK_TEMPERATURE,
+        max_tokens=settings.AI_MAX_TOKENS,
+        temperature=settings.AI_TEMPERATURE,
     )
     if not result.text:
         raise RuntimeError(f"AI provider returned empty response (finish_reason={result.finish_reason})")
@@ -296,7 +252,7 @@ async def stream_messages_and_broadcast(
     if client is None:
         raise RuntimeError("Model does not expose an OpenAI client; cannot stream messages")
 
-    model_id = getattr(model, "_model", settings.AGENT_MODEL)
+    model_id = getattr(model, "_model", settings.AI_MODEL)
 
     def _sync_stream() -> list[str]:
         tokens: list[str] = []
@@ -380,7 +336,7 @@ async def discover_angles(
         model=model,
         system=system,
         prompt=cluster_summaries,
-        max_tokens=settings.AI_SDK_MAX_TOKENS,
+        max_tokens=settings.AI_MAX_TOKENS,
         temperature=0.8,  # slightly higher for creative angle discovery
     )
     if not result.text:
@@ -499,8 +455,8 @@ async def generate_report_for_angle(
         model=model,
         system=system,
         prompt=notes_content,
-        max_tokens=settings.AI_SDK_MAX_TOKENS,
-        temperature=settings.AI_SDK_TEMPERATURE,
+        max_tokens=settings.AI_MAX_TOKENS,
+        temperature=settings.AI_TEMPERATURE,
     )
 
     if not result.text:

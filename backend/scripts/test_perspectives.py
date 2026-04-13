@@ -166,7 +166,7 @@ async def call_openrouter(system: str, user_msg: str) -> dict:
                 "Content-Type": "application/json",
             },
             json={
-                "model": settings.AGENT_MODEL,
+                "model": settings.AI_MODEL,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user_msg},

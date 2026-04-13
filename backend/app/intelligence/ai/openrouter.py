@@ -21,7 +21,7 @@ class OpenRouterProvider(AIProvider):
             "Content-Type": "application/json",
         }
         payload = {
-            "model": settings.OPENROUTER_MODEL,
+            "model": settings.AI_MODEL,
             "max_tokens": settings.AI_MAX_TOKENS,
             "temperature": settings.AI_TEMPERATURE,
             "messages": [
