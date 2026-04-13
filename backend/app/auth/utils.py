@@ -53,7 +53,7 @@ async def _fetch_easystarter_session_user(
     if not base:
         return None
     transport = httpx.AsyncHTTPTransport()
-    async with httpx.AsyncClient(timeout=5, transport=transport, mounts={}) as client:
+    async with httpx.AsyncClient(timeout=15, transport=transport, mounts={}) as client:
         resp = await client.get(
             f"{base}/api/auth/get-session",
             headers={"cookie": cookie},

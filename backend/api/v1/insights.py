@@ -14,7 +14,7 @@ from app.auth.utils import get_current_user
 from app.database import async_session, get_db
 from app.intelligence.insights.share_cards import render_share_card_png
 from app.models import InsightGeneration, TaskStatus, User
-from app.schemas import InsightDetailOut, InsightGenerationOut, InsightOut
+from app.schemas import InsightDetailOut, InsightGenerationOut, InsightOut, StatusResponse
 from app.intelligence.insights.service import (
     build_report_detail,
     broadcast_log,
@@ -47,7 +47,7 @@ async def stream_generation_logs(
         )
     )
     if not result.scalar_one_or_none():
-        raise HTTPException(status_code=404, detail="Generation not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "GENERATION_NOT_FOUND", "message": "Generation not found"}})
 
     async def event_generator():
         queue = subscribe_to_generation(generation_id)
@@ -176,7 +176,7 @@ async def export_insight(
     """Export insight report as markdown, HTML, or plain text."""
     report = await get_report(db, current_user.id, insight_id)
     if report is None:
-        raise HTTPException(status_code=404, detail="Insight not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "INSIGHT_NOT_FOUND", "message": "Insight not found"}})
 
     detail = await build_report_detail(db, current_user.id, report)
     title = detail.title
@@ -240,7 +240,7 @@ async def get_share_card_html(
     """Return an info-card-designer style HTML share card for the insight."""
     report = await get_report(db, current_user.id, insight_id)
     if report is None:
-        raise HTTPException(status_code=404, detail="Insight not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "INSIGHT_NOT_FOUND", "message": "Insight not found"}})
 
     detail = await build_report_detail(db, current_user.id, report)
     card = detail.share_card
@@ -312,7 +312,7 @@ body{{margin:0;background:#f5f3ed}}
     return HTMLResponse(html)
 
 
-@router.post("/{insight_id}/share-card/edit")
+@router.post("/{insight_id}/share-card/edit", response_model=StatusResponse)
 async def update_share_card_content(
     insight_id: str,
     body: ShareCardEditRequest,
@@ -322,7 +322,7 @@ async def update_share_card_content(
     """Update the share card headline/summary for a report (user editing)."""
     report = await get_report(db, current_user.id, insight_id)
     if report is None:
-        raise HTTPException(status_code=404, detail="Insight not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "INSIGHT_NOT_FOUND", "message": "Insight not found"}})
 
     # Update report_json with new share_card fields
     try:

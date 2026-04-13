@@ -477,6 +477,45 @@ class ProfileUpdate(BaseModel):
     email: EmailStr | None = None
 
 
+class UserProfileUpdate(BaseModel):
+    """Schema for PATCH /me — only allow specific fields."""
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    username: str | None = Field(default=None, min_length=2, max_length=64)
+    avatar_url: str | None = Field(default=None, max_length=512)
+
+
+# ── Simple action responses ──────────────────────────
+
+class TagListResponse(BaseModel):
+    tags: list[str]
+
+
+class StatusResponse(BaseModel):
+    status: str
+
+
+class NoteLikeResponse(BaseModel):
+    note_id: str
+    liked: bool
+
+
+class NoteShareResponse(BaseModel):
+    note_id: str
+    shared: bool
+
+
+class PostLikeResponse(BaseModel):
+    post_id: str
+    liked: bool
+
+
+class ExploreResponse(BaseModel):
+    trending: list = Field(default_factory=list)
+    recommended: list = Field(default_factory=list)
+    categories: list = Field(default_factory=list)
+
+
 class FileRegisterRequest(BaseModel):
     key: str = Field(min_length=1, max_length=1024)
     filename: str = Field(min_length=1, max_length=255)

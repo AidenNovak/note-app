@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from app.database import get_db
 from app.models import GroundPost, GroundPostLike, InsightReport, Note, NoteLike, NoteTag, SharedNote, User
-from app.schemas import GroundFeedItem, GroundPostOut, PublicUserOut
+from app.schemas import ExploreResponse, GroundFeedItem, GroundPostOut, NoteLikeResponse, NoteShareResponse, PostLikeResponse, PublicUserOut
 from app.auth.utils import get_current_user
 from app.ground.recommendation import rank_posts
 
@@ -57,14 +57,14 @@ async def get_feed(
     return items
 
 
-@router.get("/explore")
+@router.get("/explore", response_model=ExploreResponse)
 async def explore(
     current_user: User = Depends(get_current_user),
 ):
     return {"trending": [], "recommended": [], "categories": []}
 
 
-@router.post("/notes/{note_id}/share")
+@router.post("/notes/{note_id}/share", response_model=NoteShareResponse)
 async def share_note(
     note_id: str,
     db: AsyncSession = Depends(get_db),
@@ -99,7 +99,7 @@ async def share_note(
     return {"note_id": note_id, "shared": True}
 
 
-@router.post("/notes/{note_id}/like")
+@router.post("/notes/{note_id}/like", response_model=NoteLikeResponse)
 async def like_note(
     note_id: str,
     db: AsyncSession = Depends(get_db),
@@ -123,7 +123,7 @@ async def like_note(
     return {"note_id": note_id, "liked": True}
 
 
-@router.delete("/notes/{note_id}/like")
+@router.delete("/notes/{note_id}/like", response_model=NoteLikeResponse)
 async def unlike_note(
     note_id: str,
     db: AsyncSession = Depends(get_db),
@@ -238,7 +238,7 @@ async def get_post(
     )
     p = result.scalar_one_or_none()
     if not p:
-        raise HTTPException(status_code=404, detail="Post not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "POST_NOT_FOUND", "message": "Post not found"}})
 
     # Fetch referenced content
     content = None
@@ -286,11 +286,11 @@ async def create_post(
     if body.post_type == "note":
         result = await db.execute(select(Note).where(Note.id == body.ref_id, Note.user_id == current_user.id))
         if not result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="Note not found")
+            raise HTTPException(status_code=404, detail={"error": {"code": "NOTE_NOT_FOUND", "message": "Note not found"}})
     elif body.post_type == "insight":
         result = await db.execute(select(InsightReport).where(InsightReport.id == body.ref_id, InsightReport.user_id == current_user.id))
         if not result.scalar_one_or_none():
-            raise HTTPException(status_code=404, detail="Insight not found")
+            raise HTTPException(status_code=404, detail={"error": {"code": "INSIGHT_NOT_FOUND", "message": "Insight not found"}})
     # mind_graph: ref_id is user_id, no validation needed
 
     post = GroundPost(
@@ -320,7 +320,7 @@ async def create_post(
     )
 
 
-@router.post("/posts/{post_id}/like")
+@router.post("/posts/{post_id}/like", response_model=PostLikeResponse)
 async def like_post(
     post_id: str,
     db: AsyncSession = Depends(get_db),
@@ -330,7 +330,7 @@ async def like_post(
     result = await db.execute(select(GroundPost).where(GroundPost.id == post_id))
     post = result.scalar_one_or_none()
     if not post:
-        raise HTTPException(status_code=404, detail="Post not found")
+        raise HTTPException(status_code=404, detail={"error": {"code": "POST_NOT_FOUND", "message": "Post not found"}})
 
     existing = await db.execute(
         select(GroundPostLike).where(GroundPostLike.post_id == post_id, GroundPostLike.user_id == current_user.id)
@@ -345,7 +345,7 @@ async def like_post(
     return {"post_id": post_id, "liked": True}
 
 
-@router.delete("/posts/{post_id}/like")
+@router.delete("/posts/{post_id}/like", response_model=PostLikeResponse)
 async def unlike_post(
     post_id: str,
     db: AsyncSession = Depends(get_db),

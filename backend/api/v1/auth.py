@@ -9,7 +9,7 @@ from slowapi.util import get_remote_address
 from app.config import settings
 from app.database import get_db
 from app.models import User
-from app.schemas import LoginRequest, RefreshRequest, RegisterRequest, TokenResponse, UserOut
+from app.schemas import LoginRequest, RefreshRequest, RegisterRequest, TokenResponse, UserOut, UserProfileUpdate
 from app.auth.utils import (
     create_access_token,
     create_refresh_token,
@@ -99,21 +99,14 @@ async def me(current_user: User = Depends(get_current_user)):
 
 @router.patch("/me", response_model=UserOut)
 async def update_me(
-    request: Request,
+    body: UserProfileUpdate,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail={"error": {"code": "INVALID_JSON", "message": "Request body must be valid JSON"}},
-        )
-    if "avatar_url" in body:
-        current_user.avatar_url = body["avatar_url"]
-    if "username" in body:
-        current_user.username = body["username"]
+    if body.avatar_url is not None:
+        current_user.avatar_url = body.avatar_url
+    if body.username is not None:
+        current_user.username = body.username
     await db.commit()
     await db.refresh(current_user)
     return current_user

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import Note, NoteTag, User
-from app.schemas import TagsAdd
+from app.schemas import TagsAdd, TagListResponse
 from app.auth.utils import get_current_user
 
 router = APIRouter(prefix="/tags", tags=["tags"])
@@ -19,7 +19,7 @@ def _normalize_tags(raw_tags: list[str]) -> list[str]:
     return sorted({tag.strip().lower() for tag in raw_tags if tag.strip()})
 
 
-@router.get("")
+@router.get("", response_model=TagListResponse)
 async def list_tags(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
@@ -33,7 +33,7 @@ async def list_tags(
     return {"tags": [r[0] for r in result.all()]}
 
 
-@router.post("/notes/{note_id}/tags")
+@router.post("/notes/{note_id}/tags", response_model=TagListResponse)
 async def add_tags(
     note_id: str,
     body: TagsAdd,
@@ -44,9 +44,16 @@ async def add_tags(
     if not note.scalar_one_or_none():
         raise HTTPException(status_code=404, detail={"error": {"code": "NOTE_NOT_FOUND", "message": "Note not found"}})
 
-    for tag in _normalize_tags(body.tags):
-        existing = await db.execute(select(NoteTag).where(NoteTag.note_id == note_id, NoteTag.tag == tag))
-        if not existing.scalar_one_or_none():
+    new_tags = _normalize_tags(body.tags)
+
+    # Batch fetch existing tags to avoid N+1
+    existing_result = await db.execute(
+        select(NoteTag.tag).where(NoteTag.note_id == note_id, NoteTag.tag.in_(new_tags))
+    )
+    existing_tags = {r[0] for r in existing_result.all()}
+
+    for tag in new_tags:
+        if tag not in existing_tags:
             db.add(NoteTag(id=str(uuid.uuid4()), note_id=note_id, tag=tag))
 
     try:

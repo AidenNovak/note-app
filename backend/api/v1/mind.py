@@ -19,6 +19,7 @@ from app.schemas import (
     GraphResponse,
     MindNodeNoteOut,
     MindNodeNotesResponse,
+    StatusResponse,
     SynthesisUpdateOut,
 )
 from app.auth.utils import get_current_user
@@ -568,7 +569,7 @@ async def _record_connections_background(user_id: str) -> None:
         logger.warning("Failed to record mind connections", exc_info=True)
 
 
-@router.post("/connections/refresh")
+@router.post("/connections/refresh", response_model=StatusResponse)
 async def refresh_connections(
     background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
