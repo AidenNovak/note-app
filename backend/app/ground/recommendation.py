@@ -76,8 +76,10 @@ def _diversify(scored: list[tuple[GroundPost, float]]) -> list[tuple[GroundPost,
     remaining = list(scored)  # already sorted by score desc
     result: list[tuple[GroundPost, float]] = []
     recent_authors: list[str] = []  # sliding window of recent author ids
+    MIN_SPACING = 9  # same author must have ≥9 other posts between appearances
     n_authors = len({item[0].user_id for item in remaining})
-    window = max(n_authors - 1, 1)  # avoid same author within this many slots
+    # Use min spacing or (n_authors - 1) if fewer unique authors than the minimum
+    window = min(MIN_SPACING, n_authors - 1) if n_authors > 1 else 1
 
     while remaining:
         picked = None
