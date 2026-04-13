@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -131,6 +132,13 @@ async def register_file(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    # Validate storage key to prevent path traversal
+    if ".." in body.key or body.key.startswith(("/", "\\")):
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"code": "INVALID_STORAGE_KEY", "message": "Storage key contains invalid path components"}},
+        )
+
     if body.note_id:
         note_result = await db.execute(select(Note).where(Note.id == body.note_id, Note.user_id == current_user.id))
         if not note_result.scalar_one_or_none():
@@ -245,10 +253,11 @@ async def get_file(
             detail={"error": {"code": "STORAGE_UNAVAILABLE", "message": str(exc)}},
         ) from exc
 
+    safe_name = re.sub(r'["\\\r\n]', '_', db_file.filename)
     return Response(
         content=content,
         media_type=db_file.mime_type,
-        headers={"Content-Disposition": f'inline; filename="{db_file.filename}"'},
+        headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
     )
 
 

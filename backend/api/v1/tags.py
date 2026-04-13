@@ -4,6 +4,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select, distinct
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
@@ -48,7 +49,10 @@ async def add_tags(
         if not existing.scalar_one_or_none():
             db.add(NoteTag(id=str(uuid.uuid4()), note_id=note_id, tag=tag))
 
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
 
     tags_result = await db.execute(select(NoteTag.tag).where(NoteTag.note_id == note_id))
     return {"tags": [r[0] for r in tags_result.all()]}

@@ -308,7 +308,7 @@ async def _save_file(upload: UploadFile, user_id: str, note_id: str, db: AsyncSe
         upload.file.seek(0, os.SEEK_END)
         file_size = int(upload.file.tell())
         upload.file.seek(0)
-    except Exception:
+    except (OSError, AttributeError):
         file_size = 0
 
     max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
@@ -330,7 +330,7 @@ async def _save_file(upload: UploadFile, user_id: str, note_id: str, db: AsyncSe
     try:
         payload = resp.json()
         migrated_size = int(payload.get("size", file_size)) if isinstance(payload, dict) else file_size
-    except Exception:
+    except (ValueError, KeyError, TypeError):
         migrated_size = file_size
 
     db_file = File(
@@ -421,6 +421,11 @@ async def _process_note(task_id: str, note_id: str, content: str | None, file_id
             await db.commit()
 
         except Exception as e:
+            import logging
+            logging.getLogger(__name__).error(
+                "Background processing failed for note %s task %s: %s",
+                note_id, task_id, e, exc_info=True,
+            )
             task.status = TaskStatus.FAILED
             task.error = str(e)
             if note is not None:

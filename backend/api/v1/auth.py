@@ -67,7 +67,8 @@ async def login(request: Request, body: LoginRequest = Body(...), db: AsyncSessi
 
 
 @router.post("/refresh", response_model=TokenResponse)
-async def refresh(token_body: RefreshRequest, db: AsyncSession = Depends(get_db)):
+@limiter.limit("10/minute")
+async def refresh(request: Request, token_body: RefreshRequest, db: AsyncSession = Depends(get_db)):
     from jose import JWTError, jwt
     from app.config import settings
 
@@ -80,8 +81,11 @@ async def refresh(token_body: RefreshRequest, db: AsyncSession = Depends(get_db)
         raise HTTPException(status_code=401, detail={"error": {"code": "INVALID_TOKEN", "message": "Invalid refresh token"}})
 
     result = await db.execute(select(User).where(User.id == user_id))
-    if not result.scalar_one_or_none():
+    user = result.scalar_one_or_none()
+    if not user:
         raise HTTPException(status_code=401, detail={"error": {"code": "USER_NOT_FOUND", "message": "User not found"}})
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail={"error": {"code": "ACCOUNT_DISABLED", "message": "Account is disabled"}})
 
     return TokenResponse(
         access_token=create_access_token(user_id),
@@ -99,7 +103,13 @@ async def update_me(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"code": "INVALID_JSON", "message": "Request body must be valid JSON"}},
+        )
     if "avatar_url" in body:
         current_user.avatar_url = body["avatar_url"]
     if "username" in body:

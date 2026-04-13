@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.auth.utils import get_current_user
 from app.config import settings
 from app.database import get_db, async_session
-from app.models import Folder, Note, NoteTag, NoteVersion, TaskStatus, User, VersionOrigin
+from app.models import Folder, MindConnection, Note, NoteEmbedding, NoteTag, NoteSimilarity, NoteVersion, TaskStatus, User, VersionOrigin
 from app.note_collaboration import dumps_tags, normalize_tags, resolve_note_metadata
 from app.schemas import NoteCreate, NoteDetail, NoteListResponse, NoteOut, NoteUpdate
 from app.storage import categorize_mime_type
@@ -29,7 +29,7 @@ async def _background_embed(note_id: str, content: str, user_id: str) -> None:
             await update_note_embedding(db, note_id, content)
             await recompute_similarities(db, note_id, user_id)
     except Exception:
-        logger.warning("Background embedding failed for note %s", note_id, exc_info=True)
+        logger.error("Background embedding failed for note %s (user %s)", note_id, user_id, exc_info=True)
 
 
 async def _background_ai_tag(note_id: str, content: str, title: str, user_id: str) -> None:
@@ -69,7 +69,7 @@ async def _background_ai_tag(note_id: str, content: str, title: str, user_id: st
                 note.title_source = resolved.title_source
             await db.commit()
     except Exception:
-        logger.warning("Background AI tagging failed for note %s", note_id, exc_info=True)
+        logger.error("Background AI tagging failed for note %s (user %s)", note_id, user_id, exc_info=True)
 
 NOTE_SORT_COLUMNS = {
     "created_at": Note.created_at,
@@ -446,6 +446,23 @@ async def delete_note(
             status_code=404,
             detail={"error": {"code": "NOTE_NOT_FOUND", "message": "Note not found"}},
         )
+
+    # Clean up related records that lack ORM cascade relationships
+    await db.execute(
+        NoteEmbedding.__table__.delete().where(NoteEmbedding.__table__.c.note_id == note_id)
+    )
+    await db.execute(
+        NoteSimilarity.__table__.delete().where(
+            or_(NoteSimilarity.__table__.c.note_id == note_id,
+                NoteSimilarity.__table__.c.similar_note_id == note_id)
+        )
+    )
+    await db.execute(
+        MindConnection.__table__.delete().where(
+            or_(MindConnection.__table__.c.note_a_id == note_id,
+                MindConnection.__table__.c.note_b_id == note_id)
+        )
+    )
 
     await db.delete(note)
     await db.commit()

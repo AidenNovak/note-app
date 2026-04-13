@@ -6,6 +6,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -114,7 +115,10 @@ async def like_note(
     )
     if not existing.scalar_one_or_none():
         db.add(NoteLike(id=str(uuid.uuid4()), shared_note_id=sn.id, user_id=current_user.id))
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
 
     return {"note_id": note_id, "liked": True}
 
@@ -333,7 +337,10 @@ async def like_post(
     )
     if not existing.scalar_one_or_none():
         db.add(GroundPostLike(id=str(uuid.uuid4()), post_id=post_id, user_id=current_user.id))
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
 
     return {"post_id": post_id, "liked": True}
 
