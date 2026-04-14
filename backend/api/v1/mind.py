@@ -565,6 +565,16 @@ async def _record_connections_background(user_id: str) -> None:
                 db.add(MindConnection(id=str(uuid.uuid4()), user_id=user_id, **conn))
             await db.commit()
             logger.info("Recorded %d mind connections for user %s", len(connections[:100]), user_id)
+
+            # Notify user about new connections (pick the top one)
+            if connections:
+                from app.notifications.triggers import notify_mind_connection
+                top = connections[0]
+                note_a = await db.get(Note, top["note_a_id"])
+                note_b = await db.get(Note, top["note_b_id"])
+                title_a = (note_a.title if note_a else "笔记")[:15]
+                title_b = (note_b.title if note_b else "笔记")[:15]
+                await notify_mind_connection(db, user_id, title_a, title_b)
     except Exception:
         logger.warning("Failed to record mind connections", exc_info=True)
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -15,6 +15,7 @@ from app.models import GroundPost, GroundPostLike, InsightReport, Note, NoteLike
 from app.schemas import ExploreResponse, GroundFeedItem, GroundPostOut, NoteLikeResponse, NoteShareResponse, PostLikeResponse, PublicUserOut
 from app.auth.utils import get_current_user
 from app.ground.recommendation import rank_posts
+from app.notifications.triggers import notify_note_liked, notify_post_liked
 
 router = APIRouter(prefix="/ground", tags=["ground"])
 
@@ -102,6 +103,7 @@ async def share_note(
 @router.post("/notes/{note_id}/like", response_model=NoteLikeResponse)
 async def like_note(
     note_id: str,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -113,12 +115,20 @@ async def like_note(
     existing = await db.execute(
         select(NoteLike).where(NoteLike.shared_note_id == sn.id, NoteLike.user_id == current_user.id)
     )
-    if not existing.scalar_one_or_none():
+    is_new = not existing.scalar_one_or_none()
+    if is_new:
         db.add(NoteLike(id=str(uuid.uuid4()), shared_note_id=sn.id, user_id=current_user.id))
         try:
             await db.commit()
         except IntegrityError:
             await db.rollback()
+            is_new = False
+
+    if is_new and sn.user_id != current_user.id:
+        background_tasks.add_task(
+            notify_note_liked, db, sn.user_id,
+            current_user.display_name or current_user.username or "Someone",
+        )
 
     return {"note_id": note_id, "liked": True}
 
@@ -323,6 +333,7 @@ async def create_post(
 @router.post("/posts/{post_id}/like", response_model=PostLikeResponse)
 async def like_post(
     post_id: str,
+    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -335,12 +346,21 @@ async def like_post(
     existing = await db.execute(
         select(GroundPostLike).where(GroundPostLike.post_id == post_id, GroundPostLike.user_id == current_user.id)
     )
-    if not existing.scalar_one_or_none():
+    is_new = not existing.scalar_one_or_none()
+    if is_new:
         db.add(GroundPostLike(id=str(uuid.uuid4()), post_id=post_id, user_id=current_user.id))
         try:
             await db.commit()
         except IntegrityError:
             await db.rollback()
+            is_new = False
+
+    if is_new and post.user_id != current_user.id:
+        background_tasks.add_task(
+            notify_post_liked, db, post.user_id,
+            current_user.display_name or current_user.username or "Someone",
+            post.title,
+        )
 
     return {"post_id": post_id, "liked": True}
 

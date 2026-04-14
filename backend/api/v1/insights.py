@@ -131,16 +131,23 @@ async def get_insight_detail(
 async def _background_generate_clustered(generation_id: str) -> None:
     """Run clustered pipeline in its own db session."""
     from app.intelligence.insights.clustered_pipeline import run_clustered_pipeline
+    from app.notifications.triggers import notify_insight_ready
 
     async with async_session() as db:
         generation = await db.get(InsightGeneration, generation_id)
         if generation is None:
             return
+        user_id = generation.user_id
         generation.status = TaskStatus.PROCESSING
         generation.workflow_version = "clustered-v1"
         await db.commit()
         try:
             await run_clustered_pipeline(db, generation)
+            # Notify user that insight is ready
+            await notify_insight_ready(
+                db, user_id, generation_id,
+                generation.summary or "你的洞察分析已完成",
+            )
         except Exception as exc:
             logger.exception("Clustered pipeline failed for %s", generation_id)
             generation.status = TaskStatus.FAILED
