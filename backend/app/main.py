@@ -25,8 +25,7 @@ from app.middleware import (
 from api.v1.auth import router as auth_router
 from api.v1.notes import router as notes_router
 from api.v1.files import router as files_router
-from api.v1.tasks import router as tasks_create_router
-from api.v1.tasks import task_router
+from api.v1.tasks import router as tasks_router
 from api.v1.folders import router as folders_router
 from api.v1.tags import router as tags_router
 from api.v1.search import router as search_router
@@ -84,8 +83,7 @@ Instrumentator().instrument(app).expose(app, endpoint="/metrics")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(notes_router, prefix="/api/v1")
 app.include_router(files_router, prefix="/api/v1")
-app.include_router(tasks_create_router, prefix="/api/v1")
-app.include_router(task_router, prefix="/api/v1")
+app.include_router(tasks_router, prefix="/api/v1")
 app.include_router(folders_router, prefix="/api/v1")
 app.include_router(tags_router, prefix="/api/v1")
 app.include_router(search_router, prefix="/api/v1")

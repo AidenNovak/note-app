@@ -229,12 +229,9 @@ async def list_tasks(
     )
 
 
-# ── Separate router for /tasks/{id} (mounted at /tasks) ─
+# ── Task detail & retry (also under /notes prefix) ─
 
-task_router = APIRouter(prefix="/tasks", tags=["tasks"])
-
-
-@task_router.get("/{task_id}", response_model=TaskDetail)
+@router.get("/tasks/{task_id}", response_model=TaskDetail)
 async def get_task(
     task_id: str,
     db: AsyncSession = Depends(get_db),
@@ -258,7 +255,7 @@ async def get_task(
     )
 
 
-@task_router.post("/{task_id}/retry")
+@router.post("/tasks/{task_id}/retry")
 async def retry_task(
     task_id: str,
     background_tasks: BackgroundTasks,
