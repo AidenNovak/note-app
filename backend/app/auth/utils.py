@@ -138,8 +138,14 @@ async def get_current_user(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail={"error": {"code": "USER_INACTIVE", "message": "User account is inactive"}},
                 )
+            if user.deleted_at:
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail={"error": {"code": "ACCOUNT_DELETED", "message": "Account has been deleted"}},
+                )
             return user
 
+    # Legacy cookie bridge — kept for backward compatibility during migration
     cookie = request.headers.get("cookie")
     if cookie and settings.EASYSTARTER_SERVER_URL:
         session_user = await _fetch_easystarter_session_user(
@@ -152,7 +158,6 @@ async def get_current_user(
                 return bridged
 
     # Dev mode: auto-create and return a dev user so the app works without login
-    # Guard: only allow on truly local requests to prevent accidental production bypass
     if settings.APP_ENV == "development" and not running_on_vercel():
         return await _get_or_create_dev_user(db)
 

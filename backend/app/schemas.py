@@ -37,7 +37,9 @@ class UserOut(BaseModel):
     id: str
     username: str
     email: str
+    display_name: str | None = None
     avatar_url: str | None = None
+    email_verified: bool = False
     created_at: datetime
 
     model_config = {"from_attributes": True}

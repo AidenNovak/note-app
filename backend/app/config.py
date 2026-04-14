@@ -61,10 +61,38 @@ class Settings(BaseSettings):
     SECRET_KEY: str = Field(min_length=32)
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    EASYSTARTER_SERVER_URL: str = ""
+    EASYSTARTER_SERVER_URL: str = ""  # deprecated — will be removed after migration
     STORAGE_MIGRATION_TOKEN: str = ""
     STORAGE_PATH: str = "./data/files"
     MAX_FILE_SIZE_MB: int = 500
+
+    # ── OAuth Providers ───────────────────────────────────
+    APPLE_APP_BUNDLE_IDENTIFIER: str = "app.jilly.atelier"
+    APPLE_TEAM_ID: str = ""
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+    GITHUB_CLIENT_ID: str = ""
+    GITHUB_CLIENT_SECRET: str = ""
+
+    # ── Payments ──────────────────────────────────────────
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    REVENUECAT_WEBHOOK_AUTHORIZATION: str = ""
+
+    # ── Email (Resend) ────────────────────────────────────
+    RESEND_API_KEY: str = ""
+    EMAIL_FROM_NAME: str = "atélier"
+    EMAIL_FROM_ADDRESS: str = "noreply@jilly.app"
+
+    # ── Storage (R2 via S3 API) ───────────────────────────
+    R2_ACCOUNT_ID: str = ""
+    R2_ACCESS_KEY_ID: str = ""
+    R2_SECRET_ACCESS_KEY: str = ""
+    R2_BUCKET_NAME: str = "atelier-bucket"
+    CDN_BASE_URL: str = "https://cdn.jilly.app"
+
+    # ── Frontend URLs (for email links, CORS) ─────────────
+    FRONTEND_URL: str = "https://app.jilly.app"
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
