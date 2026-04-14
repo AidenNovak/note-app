@@ -14,14 +14,23 @@ depends_on = None
 
 def upgrade() -> None:
     # ── Extend users table ────────────────────────────────
-    op.add_column("users", sa.Column("display_name", sa.String(128), nullable=True))
-    op.add_column("users", sa.Column("email_verified", sa.Boolean(), nullable=True, server_default=sa.text("false")))
-    op.add_column("users", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True))
-    op.add_column("users", sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True))
+    # Columns may already exist if a previous run partially succeeded
+    conn = op.get_bind()
+    inspector = sa.inspect(conn)
+    existing_cols = {c['name'] for c in inspector.get_columns('users')}
+    if "display_name" not in existing_cols:
+        op.add_column("users", sa.Column("display_name", sa.String(128), nullable=True))
+    if "email_verified" not in existing_cols:
+        op.add_column("users", sa.Column("email_verified", sa.Boolean(), nullable=True, server_default=sa.text("false")))
+    if "deleted_at" not in existing_cols:
+        op.add_column("users", sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True))
+    if "updated_at" not in existing_cols:
+        op.add_column("users", sa.Column("updated_at", sa.DateTime(timezone=True), nullable=True))
 
     # Back-fill email_verified for existing rows
     op.execute("UPDATE users SET email_verified = false WHERE email_verified IS NULL")
-    op.alter_column("users", "email_verified", nullable=False)
+    with op.batch_alter_table("users") as batch_op:
+        batch_op.alter_column("email_verified", nullable=False)
 
     # ── oauth_accounts ────────────────────────────────────
     op.create_table(

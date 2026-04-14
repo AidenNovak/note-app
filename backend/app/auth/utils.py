@@ -80,6 +80,12 @@ async def get_current_user(
 
 async def _get_or_create_dev_user(db: AsyncSession) -> User:
     """Return a persistent dev user for local development."""
+    # Prefer the real seeded dev account if it exists
+    result = await db.execute(select(User).where(User.email == "dev@test.local"))
+    user = result.scalar_one_or_none()
+    if user is not None:
+        return user
+
     dev_email = "dev@localhost.dev"
     result = await db.execute(select(User).where(User.email == dev_email))
     user = result.scalar_one_or_none()
