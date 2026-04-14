@@ -320,7 +320,7 @@ async def reset_password(
 async def apple_sign_in(
     request: Request,
     identity_token: str = Body(...),
-    full_name: dict | None = Body(None),
+    full_name: Optional[dict] = Body(None),
     db: AsyncSession = Depends(get_db),
 ):
     """Authenticate via Apple Sign In. Accepts the identityToken from the Apple SDK."""
@@ -473,11 +473,11 @@ async def _oauth_login_or_register(
     db: AsyncSession,
     provider: str,
     provider_account_id: str,
-    email: str | None,
+    email: Optional[str],
     email_verified: bool = False,
-    name: str | None = None,
-    avatar_url: str | None = None,
-    access_token: str | None = None,
+    name: Optional[str] = None,
+    avatar_url: Optional[str] = None,
+    access_token: Optional[str] = None,
 ) -> User:
     """Find or create user from OAuth provider info."""
     import re
