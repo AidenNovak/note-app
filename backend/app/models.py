@@ -73,11 +73,17 @@ class User(Base):
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255))
+    display_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     avatar_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     notes: Mapped[List["Note"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
     folders: Mapped[List["Folder"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
+    oauth_accounts: Mapped[List["OAuthAccount"]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    sessions: Mapped[List["UserSession"]] = relationship(back_populates="user", cascade="all, delete-orphan")
 
 
 class Folder(Base):
@@ -342,3 +348,144 @@ class MindConnection(Base):
     similarity_score: Mapped[float] = mapped_column(Float, default=0.0)
     connection_type: Mapped[str] = mapped_column(String(32), default="tag_cooccurrence")  # tag_cooccurrence | semantic | hybrid
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ── Auth & Identity ──────────────────────────────────────
+
+class OAuthAccount(Base):
+    """Links a user to an external OAuth provider (Apple, Google, GitHub)."""
+    __tablename__ = "oauth_accounts"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_account_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32), index=True)  # apple, google, github
+    provider_account_id: Mapped[str] = mapped_column(String(255))  # sub from provider
+    access_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    refresh_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    id_token: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    token_expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    scope: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    user: Mapped["User"] = relationship(back_populates="oauth_accounts")
+
+
+class UserSession(Base):
+    """Server-side session for multi-device support and active revocation."""
+    __tablename__ = "user_sessions"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)  # opaque token
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    refresh_token_hash: Mapped[str] = mapped_column(String(128), unique=True)
+    ip_address: Mapped[Optional[str]] = mapped_column(String(45), nullable=True)
+    user_agent: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    user: Mapped["User"] = relationship(back_populates="sessions")
+
+
+class EmailVerification(Base):
+    """Token for email verification and password reset flows."""
+    __tablename__ = "email_verifications"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    purpose: Mapped[str] = mapped_column(String(32))  # verify_email, reset_password
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ── Billing & Payments ───────────────────────────────────
+
+class BillingCustomer(Base):
+    """Maps a user to their payment provider customer record."""
+    __tablename__ = "billing_customers"
+    __table_args__ = (
+        UniqueConstraint("user_id", "provider"),
+        UniqueConstraint("provider", "provider_customer_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))  # stripe, revenuecat
+    provider_customer_id: Mapped[str] = mapped_column(String(255))
+    email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BillingSubscription(Base):
+    """Tracks active subscriptions from Stripe or RevenueCat."""
+    __tablename__ = "billing_subscriptions"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_subscription_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_subscription_id: Mapped[str] = mapped_column(String(255))
+    provider_customer_id: Mapped[str] = mapped_column(String(255))
+    plan_id: Mapped[str] = mapped_column(String(64))
+    price_id: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32))  # active, paused, canceled, past_due, etc.
+    current_period_end: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_event_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BillingPurchase(Base):
+    """One-time or lifetime purchases."""
+    __tablename__ = "billing_purchases"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_payment_intent_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_payment_intent_id: Mapped[str] = mapped_column(String(255))
+    plan_id: Mapped[str] = mapped_column(String(64))
+    price_id: Mapped[str] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(32))  # succeeded, pending, failed, refunded
+    paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_event_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BillingCheckoutSession(Base):
+    """Records Stripe checkout session attempts."""
+    __tablename__ = "billing_checkout_sessions"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_session_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_session_id: Mapped[str] = mapped_column(String(255))
+    plan_id: Mapped[str] = mapped_column(String(64))
+    price_id: Mapped[str] = mapped_column(String(128))
+    mode: Mapped[str] = mapped_column(String(32))  # subscription, payment
+    status: Mapped[str] = mapped_column(String(32), default="created")  # created, completed, expired
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class BillingEvent(Base):
+    """Webhook idempotency: stores processed provider events to prevent duplicates."""
+    __tablename__ = "billing_events"
+    __table_args__ = (
+        UniqueConstraint("provider", "provider_event_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(32))
+    provider_event_id: Mapped[str] = mapped_column(String(255))
+    event_type: Mapped[str] = mapped_column(String(64))
+    payload_json: Mapped[str] = mapped_column(Text)
+    processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
