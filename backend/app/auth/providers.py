@@ -175,6 +175,56 @@ _GITHUB_TOKEN_URL = "https://github.com/login/oauth/access_token"
 _GITHUB_USER_URL = "https://api.github.com/user"
 _GITHUB_EMAILS_URL = "https://api.github.com/user/emails"
 
+# ── Google OAuth Code Exchange ────────────────────────────
+
+_GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v3/userinfo"
+
+
+async def exchange_google_code(
+    code: str,
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str,
+) -> dict:
+    """Exchange a Google OAuth authorization code for user info.
+
+    Returns dict with keys: sub, email, email_verified, name, picture.
+    Raises ValueError on failure.
+    """
+    async with httpx.AsyncClient(timeout=15) as client:
+        token_resp = await client.post(
+            _GOOGLE_TOKEN_URL,
+            data={
+                "code": code,
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+        )
+        token_data = token_resp.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            raise ValueError(
+                f"Google token exchange failed: {token_data.get('error_description', token_data.get('error', 'unknown'))}"
+            )
+
+        userinfo_resp = await client.get(
+            _GOOGLE_USERINFO_URL,
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+        userinfo_resp.raise_for_status()
+        info = userinfo_resp.json()
+
+        return {
+            "sub": info["sub"],
+            "email": info.get("email"),
+            "email_verified": info.get("email_verified", False),
+            "name": info.get("name"),
+            "picture": info.get("picture"),
+        }
+
 
 async def exchange_github_code(
     code: str,

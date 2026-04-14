@@ -2,6 +2,7 @@ import hashlib
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from sqlalchemy import select, and_
@@ -30,6 +31,7 @@ from app.auth.utils import (
 from app.auth.providers import (
     verify_apple_identity_token,
     verify_google_id_token,
+    exchange_google_code,
     exchange_github_code,
 )
 from app.email.service import (
@@ -308,17 +310,38 @@ async def apple_sign_in(
 @limiter.limit("10/minute")
 async def google_sign_in(
     request: Request,
-    id_token: str = Body(..., embed=True),
+    id_token: Optional[str] = Body(None, embed=True),
+    code: Optional[str] = Body(None, embed=True),
+    redirect_uri: Optional[str] = Body(None, embed=True),
     db: AsyncSession = Depends(get_db),
 ):
-    """Authenticate via Google Sign In. Accepts the idToken from Google SDK."""
+    """Authenticate via Google. Accepts either id_token (native) or code+redirect_uri (web)."""
     if not settings.GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=501, detail={"error": {"code": "NOT_CONFIGURED", "message": "Google OAuth not configured"}})
 
-    try:
-        claims = await verify_google_id_token(id_token, client_id=settings.GOOGLE_CLIENT_ID)
-    except ValueError as e:
-        raise HTTPException(status_code=401, detail={"error": {"code": "GOOGLE_AUTH_FAILED", "message": str(e)}})
+    if code:
+        # Web flow: exchange authorization code
+        if not settings.GOOGLE_CLIENT_SECRET:
+            raise HTTPException(status_code=501, detail={"error": {"code": "NOT_CONFIGURED", "message": "Google OAuth client secret not configured"}})
+        if not redirect_uri:
+            raise HTTPException(status_code=400, detail={"error": {"code": "MISSING_REDIRECT_URI", "message": "redirect_uri is required with code flow"}})
+        try:
+            claims = await exchange_google_code(
+                code=code,
+                client_id=settings.GOOGLE_CLIENT_ID,
+                client_secret=settings.GOOGLE_CLIENT_SECRET,
+                redirect_uri=redirect_uri,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=401, detail={"error": {"code": "GOOGLE_AUTH_FAILED", "message": str(e)}})
+    elif id_token:
+        # Native flow: verify id_token directly
+        try:
+            claims = await verify_google_id_token(id_token, client_id=settings.GOOGLE_CLIENT_ID)
+        except ValueError as e:
+            raise HTTPException(status_code=401, detail={"error": {"code": "GOOGLE_AUTH_FAILED", "message": str(e)}})
+    else:
+        raise HTTPException(status_code=400, detail={"error": {"code": "MISSING_PARAMS", "message": "Either id_token or code is required"}})
 
     user = await _oauth_login_or_register(
         db=db,
