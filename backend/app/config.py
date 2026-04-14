@@ -61,8 +61,6 @@ class Settings(BaseSettings):
     SECRET_KEY: str = Field(min_length=32)
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
-    EASYSTARTER_SERVER_URL: str = ""  # deprecated — will be removed after migration
-    STORAGE_MIGRATION_TOKEN: str = ""
     STORAGE_PATH: str = "./data/files"
     MAX_FILE_SIZE_MB: int = 500
 
