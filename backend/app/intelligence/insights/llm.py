@@ -9,9 +9,13 @@ import json
 import logging
 from typing import Type, TypeVar
 
-from ai_sdk import generate_text, stream_text
-from ai_sdk.providers.language_model import LanguageModel
-from ai_sdk.providers.openai import OpenAIModel
+try:
+    from ai_sdk import generate_text, stream_text
+    from ai_sdk.providers.language_model import LanguageModel
+    from ai_sdk.providers.openai import OpenAIModel
+    _HAS_AI_SDK = True
+except ImportError:
+    _HAS_AI_SDK = False
 import openai as _openai_lib
 from pydantic import BaseModel
 

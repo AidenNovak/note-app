@@ -7,7 +7,10 @@ from datetime import datetime
 from io import BytesIO
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFilter, ImageFont
+try:
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+except ImportError:
+    Image = ImageDraw = ImageFilter = ImageFont = None  # type: ignore[assignment]
 
 from app.schemas import InsightShareCardMetricOut, InsightShareCardOut
 
