@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     R2_BUCKET_NAME: str = "atelier-bucket"
     CDN_BASE_URL: str = "https://cdn.jilly.app"
 
+    # ── Server URLs ──────────────────────────────────────
+    EASYSTARTER_SERVER_URL: str = ""
     # ── Frontend URLs (for email links, CORS) ─────────────
     FRONTEND_URL: str = "https://app.jilly.app"
     CORS_ORIGINS: list[str] = [
