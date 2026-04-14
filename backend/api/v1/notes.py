@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.auth.utils import get_current_user
 from app.config import settings
 from app.database import get_db, async_session
-from app.models import Folder, MindConnection, Note, NoteEmbedding, NoteTag, NoteSimilarity, NoteVersion, TaskStatus, User, VersionOrigin
+from app.models import AIStatus, Folder, MindConnection, Note, NoteEmbedding, NoteTag, NoteSimilarity, NoteVersion, TaskStatus, User, VersionOrigin
 from app.note_collaboration import dumps_tags, normalize_tags, resolve_note_metadata
 from app.schemas import NoteCreate, NoteDetail, NoteListResponse, NoteOut, NoteUpdate
 from app.storage import categorize_mime_type
@@ -26,6 +26,14 @@ async def _background_embed(note_id: str, content: str, user_id: str) -> None:
     try:
         from app.intelligence.embeddings import update_note_embedding, recompute_similarities
         async with async_session() as db:
+            # Only update ai_status if AI processing is pending (tagging will follow)
+            await db.execute(
+                Note.__table__.update()
+                .where(Note.__table__.c.id == note_id, Note.__table__.c.ai_status == AIStatus.PENDING)
+                .values(ai_status=AIStatus.EMBEDDING)
+            )
+            await db.commit()
+
             await update_note_embedding(db, note_id, content)
             await recompute_similarities(db, note_id, user_id)
     except Exception:
@@ -38,6 +46,13 @@ async def _background_ai_tag(note_id: str, content: str, title: str, user_id: st
     logger = logging.getLogger(__name__)
     try:
         async with async_session() as db:
+            await db.execute(
+                Note.__table__.update()
+                .where(Note.__table__.c.id == note_id)
+                .values(ai_status=AIStatus.TAGGING)
+            )
+            await db.commit()
+
             resolved = await resolve_note_metadata(
                 content,
                 explicit_title=title if title != "Untitled Note" else None,
@@ -46,6 +61,12 @@ async def _background_ai_tag(note_id: str, content: str, title: str, user_id: st
                 user_id=user_id,
             )
             if not resolved.tags:
+                await db.execute(
+                    Note.__table__.update()
+                    .where(Note.__table__.c.id == note_id)
+                    .values(ai_status=AIStatus.DONE)
+                )
+                await db.commit()
                 return
 
             # Only apply AI tags if no human tags have been added since
@@ -53,6 +74,12 @@ async def _background_ai_tag(note_id: str, content: str, title: str, user_id: st
                 select(NoteTag).where(NoteTag.note_id == note_id)
             )).scalars().all()
             if existing_tags:
+                await db.execute(
+                    Note.__table__.update()
+                    .where(Note.__table__.c.id == note_id)
+                    .values(ai_status=AIStatus.DONE)
+                )
+                await db.commit()
                 return  # tags were added manually — don't overwrite
 
             note = (await db.execute(
@@ -63,6 +90,7 @@ async def _background_ai_tag(note_id: str, content: str, title: str, user_id: st
 
             await _replace_note_tags(db, note_id, resolved.tags)
             note.tag_source = resolved.tag_source
+            note.ai_status = AIStatus.DONE
             # Also update title if it was "Untitled Note" and AI generated one
             if note.title == "Untitled Note" and resolved.title != "Untitled Note":
                 note.title = resolved.title
@@ -70,6 +98,16 @@ async def _background_ai_tag(note_id: str, content: str, title: str, user_id: st
             await db.commit()
     except Exception:
         logger.error("Background AI tagging failed for note %s (user %s)", note_id, user_id, exc_info=True)
+        try:
+            async with async_session() as db:
+                await db.execute(
+                    Note.__table__.update()
+                    .where(Note.__table__.c.id == note_id)
+                    .values(ai_status=AIStatus.FAILED)
+                )
+                await db.commit()
+        except Exception:
+            logger.error("Failed to set ai_status=FAILED for note %s", note_id, exc_info=True)
 
 NOTE_SORT_COLUMNS = {
     "created_at": Note.created_at,
@@ -116,6 +154,7 @@ def _build_note_out(note: Note) -> NoteOut:
         folder_id=note.folder_id,
         tags=_tag_values(note),
         tag_source=note.tag_source.value,
+        ai_status=note.ai_status.value,
         source_type=note.source_type.value if note.source_type else None,
         attachment_count=len(note.attachments),
         content_preview=_content_preview(note.markdown_content),
@@ -272,6 +311,7 @@ async def get_note(
         folder_id=note.folder_id,
         tags=_tag_values(note),
         tag_source=note.tag_source.value,
+        ai_status=note.ai_status.value,
         source_type=note.source_type.value if note.source_type else None,
         source_file_id=note.source_file_id,
         current_version=note.current_version,
@@ -310,6 +350,7 @@ async def create_note(
         user_id=current_user.id,
         folder_id=body.folder_id,
         tag_source=resolved.tag_source,
+        ai_status=AIStatus.PENDING if (resolved.needs_ai_tagging and resolved.markdown_content) else AIStatus.IDLE,
         current_version=1,
     )
     db.add(note)

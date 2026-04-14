@@ -93,6 +93,7 @@ class NoteOut(BaseModel):
     folder_id: str | None
     tags: list[str]
     tag_source: str
+    ai_status: str = "idle"
     source_type: str | None = None
     attachment_count: int = 0
     content_preview: str = ""

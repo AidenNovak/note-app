@@ -52,6 +52,15 @@ class MetadataSource(str, enum.Enum):
     NONE = "none"
 
 
+class AIStatus(str, enum.Enum):
+    IDLE = "idle"
+    PENDING = "pending"
+    EMBEDDING = "embedding"
+    TAGGING = "tagging"
+    DONE = "done"
+    FAILED = "failed"
+
+
 class VersionOrigin(str, enum.Enum):
     HUMAN = "human"
     AI = "ai"
@@ -95,6 +104,7 @@ class Note(Base):
     folder_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("folders.id"), nullable=True)
     title_source: Mapped[MetadataSource] = mapped_column(Enum(MetadataSource), default=MetadataSource.SYSTEM)
     tag_source: Mapped[MetadataSource] = mapped_column(Enum(MetadataSource), default=MetadataSource.NONE)
+    ai_status: Mapped[AIStatus] = mapped_column(Enum(AIStatus), default=AIStatus.IDLE)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
     current_version: Mapped[int] = mapped_column(Integer, default=1)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
