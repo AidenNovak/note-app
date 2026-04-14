@@ -33,10 +33,12 @@ from app.auth.providers import (
     exchange_github_code,
 )
 from app.email.service import (
+    EmailError,
     send_email,
     render_verification_email,
     render_password_reset_email,
 )
+from app.logging_config import logger
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -83,7 +85,7 @@ async def register(request: Request, body: RegisterRequest = Body(...), db: Asyn
     await db.commit()
     await db.refresh(user)
 
-    # Send verification email (non-blocking — don't fail registration if email fails)
+    # Send verification email (best-effort — log failures but don't block registration)
     try:
         token = secrets.token_urlsafe(32)
         verification = EmailVerification(
@@ -98,8 +100,8 @@ async def register(request: Request, body: RegisterRequest = Body(...), db: Asyn
         locale = _get_locale(request)
         subject, html = render_verification_email(name=user.username, code=token[:6].upper(), locale=locale)
         await send_email(to=user.email, subject=subject, html=html)
-    except Exception:
-        pass  # Email failure should not block registration
+    except Exception as exc:
+        logger.error("registration_email_failed", email=user.email, error=str(exc))
 
     return user
 
@@ -222,7 +224,11 @@ async def request_password_reset(request: Request, email: str = Body(..., embed=
 
     locale = _get_locale(request)
     subject, html = render_password_reset_email(name=user.username, code=code, locale=locale)
-    await send_email(to=user.email, subject=subject, html=html)
+    try:
+        await send_email(to=user.email, subject=subject, html=html)
+    except EmailError as exc:
+        logger.error("password_reset_email_failed", email=email, error=str(exc))
+        raise HTTPException(status_code=503, detail={"error": {"code": "EMAIL_SEND_FAILED", "message": "Failed to send reset email. Please try again later."}})
     return {"status": "ok"}
 
 
