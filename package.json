@@ -5,17 +5,11 @@
   "scripts": {
     "dev": "make dev",
     "dev:backend": "make backend-dev",
-    "dev:web": "make web-dev",
-    "dev:native": "make dev-native",
-    "install": "make install",
+    "dev:native": "make native-dev",
+    "install:backend": "make backend-install",
     "install:native": "make native-install",
-    "lint": "make backend-lint && make web-lint",
-    "build": "make web-build",
+    "lint": "make backend-lint",
     "test": "make backend-test"
   },
-  "packageManager": "pnpm@10.17.1",
-  "dependencies": {
-    "docx": "^9.6.1",
-    "playwright": "^1.59.1"
-  }
+  "packageManager": "pnpm@10.17.1"
 }

@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 *.pyo
 .env
+.env*.local
 data/
 *.db
 *.egg-info/
@@ -11,35 +12,17 @@ build/
 venv/
 *.tar.gz
 logs/
-backend/logs/
 
 # Node / Turbo (easystarter)
 node_modules/
 .turbo/
 
-# Flutter
-archive/flutter/frontend/build/
-archive/flutter/frontend/.dart_tool/
-archive/flutter/frontend/.pub-cache/
-archive/flutter/frontend/.pub/
-archive/flutter/frontend/pubspec.lock
-archive/flutter/**/.dart_tool/
-archive/flutter/**/build/
-archive/flutter/**/.pub-cache/
-archive/flutter/**/.pub/
-archive/flutter/**/.flutter-plugins
-archive/flutter/**/.flutter-plugins-dependencies
-archive/flutter/**/.idea/
-archive/flutter/**/*.iml
+# Large assets — keep out of git
+screenshots/
+output/
 
-# Android
-android/atelier/.gradle/
-android/atelier/build/
-android/atelier/local.properties
-android/atelier/.idea/
+# Backend
+backend/logs/
 
-# iOS
-ios/atelier/.xcodebuild/
-ios/atelier/Pods/
+# Misc
 .vercel
-.env*.local

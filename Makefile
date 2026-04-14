@@ -1,13 +1,10 @@
-.PHONY: install dev dev-native backend-install backend-dev backend-lint backend-test backend-migrate-storage web-install web-dev web-lint web-build native-install native-dev
+.PHONY: install dev backend-install backend-dev backend-lint backend-test backend-migrate-storage native-install native-dev
 
 BACKEND_PORT ?= 8000
 
-install: backend-install web-install
+install: backend-install native-install
 
 dev:
-	$(MAKE) -j2 backend-dev web-dev
-
-dev-native:
 	$(MAKE) -j2 backend-dev native-dev
 
 backend-install:
@@ -25,20 +22,8 @@ backend-test:
 backend-migrate-storage:
 	cd backend && set -a && [ -f .env ] && . ./.env || true && set +a && . .venv/bin/activate && python scripts/migrate_legacy_files_to_r2.py
 
-web-install:
-	cd easystarter && corepack enable && pnpm install
-
-web-dev:
-	cd easystarter && corepack enable && pnpm dev:web+server
-
-web-lint:
-	cd easystarter/apps/web && corepack enable && pnpm lint
-
-web-build:
-	cd easystarter/apps/web && corepack enable && pnpm build
-
 native-install:
 	cd easystarter && corepack enable && pnpm install
 
 native-dev:
-	cd easystarter && corepack enable && pnpm dev:native+server
+	cd easystarter && pnpm dev:native
