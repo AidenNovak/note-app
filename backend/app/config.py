@@ -94,6 +94,9 @@ class Settings(BaseSettings):
     # ── Frontend URLs (for email links, CORS) ─────────────
     FRONTEND_URL: str = "https://app.jilly.app"
     CORS_ORIGINS: list[str] = [
+        "https://app.jilly.app",
+        "https://jilly.app",
+        "https://www.jilly.app",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:5173",
