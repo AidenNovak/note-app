@@ -89,18 +89,18 @@ async def register(request: Request, body: RegisterRequest = Body(...), db: Asyn
 
     # Send verification email (best-effort — log failures but don't block registration)
     try:
-        token = secrets.token_urlsafe(32)
+        code = secrets.token_urlsafe(32)[:6].upper()
         verification = EmailVerification(
             id=str(uuid.uuid4()),
             user_id=user.id,
-            token_hash=_hash_token(token),
+            token_hash=_hash_token(f"{code}:{user.id}"),
             purpose="verify_email",
             expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
         )
         db.add(verification)
         await db.commit()
         locale = _get_locale(request)
-        subject, html = render_verification_email(name=user.username, code=token[:6].upper(), locale=locale)
+        subject, html = render_verification_email(name=user.username, code=code, locale=locale)
         await send_email(to=user.email, subject=subject, html=html)
     except Exception as exc:
         logger.error("registration_email_failed", email=user.email, error=str(exc))
@@ -176,30 +176,72 @@ async def update_me(
 
 @router.post("/verify-email")
 @limiter.limit("5/minute")
-async def verify_email(request: Request, code: str = Body(..., embed=True), db: AsyncSession = Depends(get_db)):
-    """Verify email with a 6-char code (first 6 chars of the token, uppercased)."""
-    # Look for recent unexpired, unused verifications
-    cutoff = datetime.now(timezone.utc)
+async def verify_email(
+    request: Request,
+    email: str = Body(...),
+    code: str = Body(...),
+    db: AsyncSession = Depends(get_db),
+):
+    """Verify email with the 6-char code sent during registration."""
+    result = await db.execute(select(User).where(User.email == email.lower()))
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=400, detail={"error": {"code": "INVALID_CODE", "message": "Invalid or expired code"}})
+
+    token_hash = _hash_token(f"{code.upper()}:{user.id}")
     result = await db.execute(
         select(EmailVerification).where(
             and_(
+                EmailVerification.token_hash == token_hash,
                 EmailVerification.purpose == "verify_email",
-                EmailVerification.expires_at > cutoff,
+                EmailVerification.expires_at > datetime.now(timezone.utc),
                 EmailVerification.used_at.is_(None),
             )
-        ).order_by(EmailVerification.created_at.desc()).limit(50)
+        )
     )
-    verifications = result.scalars().all()
+    verification = result.scalar_one_or_none()
+    if not verification:
+        raise HTTPException(status_code=400, detail={"error": {"code": "INVALID_CODE", "message": "Invalid or expired code"}})
 
-    matched = None
-    for v in verifications:
-        # Compare first 6 chars of the original token (token_hash stores full sha256)
-        # Since we send code=token[:6].upper(), we stored full hash — we need a code field.
-        # Simpler approach: just mark as verified if code matches any recent user's pending verification
-        pass
+    user.email_verified = True
+    verification.used_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"status": "ok", "message": "Email verified successfully"}
 
-    # For now, mark requesting user's email as verified if they have a pending verification
-    raise HTTPException(status_code=501, detail={"error": {"code": "NOT_IMPLEMENTED", "message": "Use /auth/verify-email-token endpoint"}})
+
+@router.post("/resend-verification")
+@limiter.limit("3/minute")
+async def resend_verification(
+    request: Request,
+    email: str = Body(..., embed=True),
+    db: AsyncSession = Depends(get_db),
+):
+    """Resend verification code to a user's email."""
+    result = await db.execute(select(User).where(User.email == email.lower()))
+    user = result.scalar_one_or_none()
+    if not user or user.email_verified:
+        # Don't reveal whether email exists or is already verified
+        return {"status": "ok"}
+
+    code = secrets.token_urlsafe(32)[:6].upper()
+    verification = EmailVerification(
+        id=str(uuid.uuid4()),
+        user_id=user.id,
+        token_hash=_hash_token(f"{code}:{user.id}"),
+        purpose="verify_email",
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=15),
+    )
+    db.add(verification)
+    await db.commit()
+
+    locale = _get_locale(request)
+    subject, html = render_verification_email(name=user.username, code=code, locale=locale)
+    try:
+        await send_email(to=user.email, subject=subject, html=html)
+    except EmailError as exc:
+        logger.error("verification_email_failed", email=email, error=str(exc))
+        raise HTTPException(status_code=503, detail={"error": {"code": "EMAIL_SEND_FAILED", "message": "Failed to send verification email. Please try again later."}})
+    return {"status": "ok"}
 
 
 @router.post("/request-password-reset")

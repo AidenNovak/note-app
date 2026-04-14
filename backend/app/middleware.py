@@ -19,7 +19,7 @@ from app.config import settings
 limiter = Limiter(
     key_func=get_remote_address,
     default_limits=["100/minute"],  # Global rate limit
-    storage_uri="memory://",  # Use in-memory storage (upgrade to Redis in production)
+    storage_uri="memory://",  # In-memory is fine for single-instance Railway; upgrade to Redis if scaling to multiple workers
 )
 
 # Configure structured logging
