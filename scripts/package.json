@@ -1,14 +1,21 @@
 {
   "name": "note-app-scripts",
   "version": "1.0.0",
+  "description": "Atélier Insight Generation Scripts",
   "type": "module",
   "scripts": {
-    "insight:ai-sdk": "node ai_sdk_insight_agent.mjs"
+    "insight": "node atelier-insight.mjs",
+    "insight:quick": "node atelier-insight.mjs --mode=quick",
+    "insight:deep": "node atelier-insight.mjs --mode=deep",
+    "insight:legacy": "node claude_insight_agent.mjs"
   },
   "dependencies": {
-    "ai": "^4.0.0",
-    "@ai-sdk/openai": "^1.0.0",
-    "@ai-sdk/anthropic": "^1.0.0",
-    "@ai-sdk/google": "^1.0.0"
+    "@ai-sdk/anthropic": "^1.1.0",
+    "@ai-sdk/google": "^1.1.0",
+    "@ai-sdk/openai": "^1.3.24",
+    "ai": "^4.3.19"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

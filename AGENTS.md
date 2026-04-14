@@ -1,8 +1,22 @@
-# Note App Agent Notes
+# Note App (atélier) — Agent Notes
 
-- `easystarter/` 已从 `/Users/lijixiang/saas` 移入当前项目根目录下。
-- `easystarter/` 是一个独立的 SaaS starter 子项目，保留了自己的 `.git`、`AGENTS.md`、`README.md` 和 monorepo 结构。
-- 如果后续要修改 `easystarter/` 内的代码，先阅读 `easystarter/AGENTS.md`，并在 `easystarter/` 目录内执行对应命令。
-Expo(native)，作为主线，然后flutter的部分是archive的内容，可以作为参考
+## 产品
 
-然后整体的代码结构是：
+**atélier** — "Your Second Digital Mind"，四模块：Inbox / Mind / Insight / Ground。
+
+## 结构
+
+- **jilly/** — Web 前端主目录（React 19 + Vite 6 + React Router v7，纯 CSS，JSX）
+  - `src/pages/LandingPage.jsx` + `src/styles/landing.css` — atélier Landing Page
+  - `public/images/atelier/` — 产品截图
+  - Dev: `cd jilly && npx vite`（port 3000）
+- **backend/** — Python 后端（FastAPI + SQLAlchemy + Alembic）
+- **easystarter/** — 独立 SaaS starter 子项目，有自己的 git 和 AGENTS.md，修改前先读它
+- **archive/** — 归档（Flutter 等旧方案，仅参考）
+- **design.md/** — 设计文档（landing-plan, landing-review, uiux 等）
+
+## 约定
+
+- Expo (native) 是移动端主线，Flutter 在 archive 仅作参考
+- Landing Page CSS 以 `.atelier-landing` 作用域 + `al-` 前缀，避免与 global.css 冲突
+- 设计语言：奶油底 #fafaf5 / 森林绿 #2d5a3d / 黄绿 #c8e64a，Playfair Display + Inter
