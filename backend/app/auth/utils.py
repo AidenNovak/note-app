@@ -71,8 +71,9 @@ async def get_current_user(
                 )
             return user
 
-    # Dev mode: auto-create and return a dev user so the app works without login
-    if settings.APP_ENV == "development" and not running_on_vercel():
+    # Dev mode: auto-create and return a dev user so the app works without login.
+    # Requires explicit DEV_AUTO_LOGIN=true AND non-production environment.
+    if settings.DEV_AUTO_LOGIN and settings.APP_ENV != "production" and not running_on_vercel():
         return await _get_or_create_dev_user(db)
 
     raise credentials_exception

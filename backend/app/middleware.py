@@ -15,11 +15,12 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 
-# Configure rate limiter
+# Configure rate limiter — uses RATE_LIMIT_STORAGE_URI from settings.
+# Default "memory://" works for single-instance; set to "redis://..." for multi-worker.
 limiter = Limiter(
     key_func=get_remote_address,
-    default_limits=["100/minute"],  # Global rate limit
-    storage_uri="memory://",  # In-memory is fine for single-instance Railway; upgrade to Redis if scaling to multiple workers
+    default_limits=["100/minute"],
+    storage_uri=settings.RATE_LIMIT_STORAGE_URI,
 )
 
 # Configure structured logging

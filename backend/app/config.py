@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     STORAGE_PATH: str = "./data/files"
     MAX_FILE_SIZE_MB: int = 500
 
+    # ── Dev mode ──────────────────────────────────────────
+    # Explicit opt-in for auto-login in development (never enable in production)
+    DEV_AUTO_LOGIN: bool = False
+    # Rate limiter backend: "memory://" for single-instance, "redis://..." for multi-worker
+    RATE_LIMIT_STORAGE_URI: str = "memory://"
+
     # ── OAuth Providers ───────────────────────────────────
     APPLE_APP_BUNDLE_IDENTIFIER: str = "app.jilly.atelier"
     APPLE_TEAM_ID: str = ""
