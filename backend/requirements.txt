@@ -36,5 +36,11 @@ Pillow==11.2.1
 pdfplumber>=0.10.0
 python-docx>=1.0.0
 
+# Object Storage (R2 via S3 API)
+boto3>=1.35.0
+
+# Auth Providers (JWKS verification)
+PyJWT[crypto]>=2.8.0
+
 # Deployment
 eval_type_backport==0.2.2
