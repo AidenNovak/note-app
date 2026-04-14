@@ -489,3 +489,61 @@ class BillingEvent(Base):
     event_type: Mapped[str] = mapped_column(String(64))
     payload_json: Mapped[str] = mapped_column(Text)
     processed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+# ── Push Notifications ────────────────────────────────
+
+
+class NotificationType(str, enum.Enum):
+    POST_LIKED = "post_liked"
+    NOTE_LIKED = "note_liked"
+    INSIGHT_READY = "insight_ready"
+    MIND_CONNECTION = "mind_connection"
+    MILESTONE = "milestone"
+    SYSTEM = "system"
+
+
+class DeviceToken(Base):
+    """Stores Expo push tokens for each user's device."""
+    __tablename__ = "device_tokens"
+    __table_args__ = (
+        UniqueConstraint("user_id", "token"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    token: Mapped[str] = mapped_column(String(512), index=True)
+    platform: Mapped[str] = mapped_column(String(16))  # ios, android
+    device_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class NotificationPreference(Base):
+    """Per-user notification preferences (which types are enabled)."""
+    __tablename__ = "notification_preferences"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), unique=True, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)  # global kill switch
+    post_liked: Mapped[bool] = mapped_column(Boolean, default=True)
+    note_liked: Mapped[bool] = mapped_column(Boolean, default=True)
+    insight_ready: Mapped[bool] = mapped_column(Boolean, default=True)
+    mind_connection: Mapped[bool] = mapped_column(Boolean, default=True)
+    milestone: Mapped[bool] = mapped_column(Boolean, default=True)
+    quiet_hours_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)  # 0-23
+    quiet_hours_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class PushNotificationLog(Base):
+    """Audit log for sent push notifications."""
+    __tablename__ = "push_notification_logs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
+    type: Mapped[str] = mapped_column(String(32), index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    body: Mapped[str] = mapped_column(String(512))
+    data_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="sent")  # sent, delivered, failed
+    error: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

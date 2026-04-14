@@ -36,6 +36,7 @@ from api.v1.insights import router as insights_router
 from api.v1.ground import router as ground_router
 from api.v1.payments import router as payments_router, webhook_router
 from api.v1.storage import router as storage_router
+from api.v1.notifications import router as notifications_router
 
 _LANDING_HTML = Path(__file__).with_name("landing.html")
 _PRODUCT_HTML = Path(__file__).with_name("product.html")
@@ -94,6 +95,7 @@ app.include_router(insights_router, prefix="/api/v1")
 app.include_router(ground_router, prefix="/api/v1")
 app.include_router(payments_router, prefix="/api/v1")
 app.include_router(storage_router, prefix="/api/v1")
+app.include_router(notifications_router, prefix="/api/v1")
 app.include_router(webhook_router, prefix="/api")
 
 
