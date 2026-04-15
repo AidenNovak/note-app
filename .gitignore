@@ -26,3 +26,6 @@ backend/logs/
 
 # Misc
 .vercel
+.DS_Store
+.copilot/
+.claude/

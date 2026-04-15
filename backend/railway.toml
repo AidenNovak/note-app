@@ -4,6 +4,7 @@ dockerfilePath = "Dockerfile"
 
 [deploy]
 numReplicas = 1
+region = "asia-southeast1-eqsg3a"
 healthcheckPath = "/health"
 healthcheckTimeout = 30
 restartPolicyType = "ON_FAILURE"
