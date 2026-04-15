@@ -8,7 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.responses import HTMLResponse
-from sqlalchemy import delete, select, func
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session, get_db
@@ -17,8 +17,16 @@ from app.schemas import (
     GraphEdgeOut,
     GraphNodeOut,
     GraphResponse,
+    MindClusterSummaryOut,
     MindNodeNoteOut,
     MindNodeNotesResponse,
+    MindNodeWorkspaceNoteOut,
+    MindNodeWorkspaceOut,
+    MindRelatedNoteOut,
+    MindSpotlightNoteOut,
+    MindWorkspaceOut,
+    MindWorkspaceOverviewOut,
+    MindWorkspacePromptOut,
     StatusResponse,
     SynthesisUpdateOut,
 )
@@ -46,6 +54,315 @@ _EDGE_MAX_COUNT = 800           # keep at most this many edges (strongest first)
 _CORE_TAG_THRESHOLD = 5         # need ≥5 tags to be "core"
 _LABEL_SHOW_TOP_N = 60          # only send labels for top N nodes by degree
 
+
+def _content_preview(content: str | None, max_len: int = 180) -> str:
+    text = (content or "").replace("\n", " ").strip()
+    if len(text) <= max_len:
+        return text
+    return text[:max_len].rstrip() + "…"
+
+
+async def _load_mind_inputs(
+    db: AsyncSession,
+    user_id: str,
+) -> tuple[list[Note], dict[str, list[str]], dict[tuple[str, str], float]]:
+    result = await db.execute(
+        select(Note).where(Note.user_id == user_id).order_by(Note.updated_at.desc())
+    )
+    notes = result.scalars().all()
+    note_ids = [note.id for note in notes]
+
+    note_tags: dict[str, list[str]] = {}
+    if note_ids:
+        tag_result = await db.execute(
+            select(NoteTag.note_id, NoteTag.tag).where(NoteTag.note_id.in_(note_ids))
+        )
+        for note_id_value, tag in tag_result.all():
+            note_tags.setdefault(note_id_value, []).append(tag)
+        for tags in note_tags.values():
+            tags.sort()
+
+    sim_map: dict[tuple[str, str], float] = {}
+    if note_ids:
+        sim_result = await db.execute(
+            select(NoteSimilarity).where(NoteSimilarity.note_id.in_(note_ids))
+        )
+        for similarity in sim_result.scalars().all():
+            pair = (
+                min(similarity.note_id, similarity.similar_note_id),
+                max(similarity.note_id, similarity.similar_note_id),
+            )
+            sim_map[pair] = max(sim_map.get(pair, 0.0), similarity.similarity_score)
+
+    return notes, note_tags, sim_map
+
+
+def _build_graph_snapshot(
+    notes: list[Note],
+    note_tags: dict[str, list[str]],
+    sim_map: dict[tuple[str, str], float],
+) -> dict[str, object]:
+    if not notes:
+        return {
+            "notes": [],
+            "note_map": {},
+            "note_tags": {},
+            "note_clusters": {},
+            "cluster_color_map": {},
+            "cluster_members": {},
+            "nodes": [],
+            "node_map": {},
+            "edges": [],
+            "edge_index": {},
+            "focus_node_id": None,
+        }
+
+    note_ids = [note.id for note in notes]
+
+    tag_freq: dict[str, int] = {}
+    for tags in note_tags.values():
+        for tag in tags:
+            tag_freq[tag] = tag_freq.get(tag, 0) + 1
+
+    top_tags_sorted = sorted(tag_freq.items(), key=lambda item: (-item[1], item[0]))
+    cluster_tags = [tag for tag, _ in top_tags_sorted[:len(_CLUSTER_COLORS)]]
+    cluster_color_map = {
+        tag: _CLUSTER_COLORS[index % len(_CLUSTER_COLORS)]
+        for index, tag in enumerate(cluster_tags)
+    }
+
+    def _note_cluster(note_id: str) -> str | None:
+        tags = note_tags.get(note_id, [])
+        for cluster_tag in cluster_tags:
+            if cluster_tag in tags:
+                return cluster_tag
+        return cluster_tags[0] if cluster_tags and tags else None
+
+    note_clusters = {note_id: _note_cluster(note_id) for note_id in note_ids}
+
+    tag_to_notes: dict[str, list[str]] = {}
+    for note_id in note_ids:
+        for tag in note_tags.get(note_id, []):
+            tag_to_notes.setdefault(tag, []).append(note_id)
+
+    pair_shared: dict[tuple[str, str], int] = {}
+    for related_note_ids in tag_to_notes.values():
+        for index in range(len(related_note_ids)):
+            for neighbor_index in range(index + 1, len(related_note_ids)):
+                pair = (
+                    min(related_note_ids[index], related_note_ids[neighbor_index]),
+                    max(related_note_ids[index], related_note_ids[neighbor_index]),
+                )
+                pair_shared[pair] = pair_shared.get(pair, 0) + 1
+
+    for pair, similarity_score in sim_map.items():
+        if pair not in pair_shared and similarity_score * 5 >= _EDGE_MIN_STRENGTH:
+            pair_shared[pair] = 0
+
+    edge_records: list[dict[str, object]] = []
+    for pair, shared_count in pair_shared.items():
+        similarity_score = sim_map.get(pair, 0.0)
+        strength = shared_count * 2 + similarity_score * 5
+        if strength < _EDGE_MIN_STRENGTH:
+            continue
+        relation = "hybrid"
+        if shared_count > 0 and similarity_score <= 0:
+            relation = "co_occurrence"
+        elif shared_count <= 0 and similarity_score > 0:
+            relation = "semantic_similarity"
+        edge_records.append(
+            {
+                "source": pair[0],
+                "target": pair[1],
+                "strength": round(strength, 2),
+                "relation": relation,
+                "co_occurrence_count": shared_count,
+                "content_similarity": round(similarity_score, 3),
+                "shared_note_count": shared_count,
+            }
+        )
+
+    edge_records.sort(key=lambda edge: -float(edge["strength"]))
+    edge_records = edge_records[:_EDGE_MAX_COUNT]
+
+    edge_strength: dict[str, float] = {note_id: 0.0 for note_id in note_ids}
+    edge_index: dict[str, list[dict[str, object]]] = {note_id: [] for note_id in note_ids}
+    for edge in edge_records:
+        source = str(edge["source"])
+        target = str(edge["target"])
+        strength = float(edge["strength"])
+        edge_strength[source] += strength
+        edge_strength[target] += strength
+        edge_index[source].append(edge)
+        edge_index[target].append(edge)
+
+    note_map = {note.id: note for note in notes}
+    cluster_members: dict[str, list[str]] = {}
+    for note_id, cluster in note_clusters.items():
+        if cluster is not None:
+            cluster_members.setdefault(cluster, []).append(note_id)
+
+    total_notes = len(notes)
+    sphere_radius = 180.0 + total_notes * 6.0
+    golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+    positions: dict[str, list[float]] = {}
+    for index, note_id in enumerate(note_ids):
+        theta = math.acos(1.0 - 2.0 * (index + 0.5) / total_notes)
+        phi = golden_angle * index
+        positions[note_id] = [
+            sphere_radius * math.sin(theta) * math.cos(phi),
+            sphere_radius * math.cos(theta),
+            sphere_radius * math.sin(theta) * math.sin(phi),
+        ]
+
+    force_index: dict[str, list[tuple[str, float]]] = {note_id: [] for note_id in note_ids}
+    for edge in edge_records:
+        source = str(edge["source"])
+        target = str(edge["target"])
+        strength = float(edge["strength"])
+        force_index[source].append((target, strength))
+        force_index[target].append((source, strength))
+
+    for _iteration in range(15):
+        displacements: dict[str, list[float]] = {note_id: [0.0, 0.0, 0.0] for note_id in note_ids}
+        for note_id in note_ids:
+            px, py, pz = positions[note_id]
+            for neighbor_id, strength in force_index[note_id]:
+                nx, ny, nz = positions[neighbor_id]
+                dx, dy, dz = nx - px, ny - py, nz - pz
+                distance = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
+                force = min(strength * 0.3, distance * 0.1)
+                displacements[note_id][0] += dx / distance * force
+                displacements[note_id][1] += dy / distance * force
+                displacements[note_id][2] += dz / distance * force
+
+        for note_id in note_ids:
+            positions[note_id][0] += displacements[note_id][0]
+            positions[note_id][1] += displacements[note_id][1]
+            positions[note_id][2] += displacements[note_id][2]
+            x, y, z = positions[note_id]
+            magnitude = math.sqrt(x * x + y * y + z * z) or 1.0
+            positions[note_id] = [
+                x / magnitude * sphere_radius,
+                y / magnitude * sphere_radius,
+                z / magnitude * sphere_radius,
+            ]
+
+    max_tag_count = max((len(note_tags.get(note_id, [])) for note_id in note_ids), default=1) or 1
+    nodes: list[GraphNodeOut] = []
+    node_map: dict[str, GraphNodeOut] = {}
+    for index, note in enumerate(notes):
+        note_id = note.id
+        tag_count = len(note_tags.get(note_id, []))
+        is_core = tag_count >= _CORE_TAG_THRESHOLD
+        size = round(0.8 + (tag_count / max_tag_count) * 3.2, 2)
+        if is_core:
+            size = round(size + 1.0, 2)
+        cluster = note_clusters.get(note_id)
+        color = cluster_color_map.get(cluster or "", "#9AA097")
+        x, y, z = positions.get(note_id, [0.0, 0.0, 0.0])
+        node = GraphNodeOut(
+            id=note_id,
+            label=(note.title or "Untitled")[:20],
+            note_count=tag_count,
+            size=size,
+            color=color,
+            x=round(x, 2),
+            y=round(y, 2),
+            z=round(z, 2),
+            rank=index + 1,
+            degree=round(edge_strength.get(note_id, 0.0), 2),
+            cluster=cluster,
+            is_core=is_core,
+        )
+        nodes.append(node)
+        node_map[note_id] = node
+
+    edges = [
+        GraphEdgeOut(
+            source=str(edge["source"]),
+            target=str(edge["target"]),
+            strength=float(edge["strength"]),
+            relation=str(edge["relation"]),
+            co_occurrence_count=int(edge["co_occurrence_count"]),
+            content_similarity=float(edge["content_similarity"]),
+            shared_note_count=int(edge["shared_note_count"]),
+        )
+        for edge in edge_records
+    ]
+
+    focus_node_id = max(nodes, key=lambda node: (node.degree, node.note_count)).id if nodes else None
+    return {
+        "notes": notes,
+        "note_map": note_map,
+        "note_tags": note_tags,
+        "note_clusters": note_clusters,
+        "cluster_color_map": cluster_color_map,
+        "cluster_members": cluster_members,
+        "nodes": nodes,
+        "node_map": node_map,
+        "edges": edges,
+        "edge_index": edge_index,
+        "focus_node_id": focus_node_id,
+    }
+
+
+def _build_spotlight_note(
+    note: Note,
+    tags: list[str],
+    cluster: str | None,
+    degree: float,
+    connection_count: int,
+) -> MindSpotlightNoteOut:
+    return MindSpotlightNoteOut(
+        id=note.id,
+        title=note.title,
+        snippet=_content_preview(note.markdown_content, max_len=140),
+        tags=tags,
+        cluster=cluster,
+        degree=round(degree, 2),
+        connection_count=connection_count,
+        created_at=note.created_at,
+        updated_at=note.updated_at,
+    )
+
+
+def _build_workspace_prompts(
+    *,
+    densest_cluster: str | None,
+    densest_cluster_note_count: int,
+    bridge_note: MindSpotlightNoteOut | None,
+    orphan_note_count: int,
+) -> list[MindWorkspacePromptOut]:
+    prompts: list[MindWorkspacePromptOut] = []
+    if densest_cluster:
+        prompts.append(
+            MindWorkspacePromptOut(
+                id="densest-cluster",
+                title=f"Consolidate {densest_cluster}",
+                description=f"{densest_cluster_note_count} notes are already orbiting this theme — it is ready for a synthesis pass.",
+                target_cluster=densest_cluster,
+            )
+        )
+    if bridge_note:
+        prompts.append(
+            MindWorkspacePromptOut(
+                id="bridge-note",
+                title=f"Review bridge note: {bridge_note.title}",
+                description="This note is connecting multiple themes. It is a strong candidate for a summary, tag cleanup, or an Insight trigger.",
+                target_node_id=bridge_note.id,
+                target_cluster=bridge_note.cluster,
+            )
+        )
+    if orphan_note_count > 0:
+        prompts.append(
+            MindWorkspacePromptOut(
+                id="orphan-notes",
+                title="Untangle isolated notes",
+                description=f"{orphan_note_count} notes are still sitting alone. Add tags or connect them to an existing theme to grow your map.",
+            )
+        )
+    return prompts
 
 @router.get("/graph/web", response_class=HTMLResponse)
 async def graph_web():
@@ -147,203 +464,279 @@ async def get_graph(
     current_user: User = Depends(get_current_user),
 ):
     """Return the knowledge graph: each note is a node, edges from shared tags + similarity."""
-    # Fetch all notes
-    result = await db.execute(
-        select(Note).where(Note.user_id == current_user.id).order_by(Note.created_at.desc())
-    )
-    notes = result.scalars().all()
-
+    notes, note_tags, sim_map = await _load_mind_inputs(db, current_user.id)
     if not notes:
         return GraphResponse(nodes=[], edges=[], core_mind_note_count=0, layout_seed=0, focus_node_id=None)
-
-    note_ids = [n.id for n in notes]
-    total_notes = len(notes)
-
-    # Fetch tags per note
-    tag_result = await db.execute(
-        select(NoteTag.note_id, NoteTag.tag).where(NoteTag.note_id.in_(note_ids))
+    snapshot = _build_graph_snapshot(notes, note_tags, sim_map)
+    return GraphResponse(
+        nodes=snapshot["nodes"],
+        edges=snapshot["edges"],
+        core_mind_note_count=len(notes),
+        layout_seed=0,
+        focus_node_id=snapshot["focus_node_id"],
     )
-    note_tags: dict[str, list[str]] = {}
-    for nid, tag in tag_result.all():
-        note_tags.setdefault(nid, []).append(tag)
 
-    # Fetch similarity scores
-    sim_result = await db.execute(
-        select(NoteSimilarity).where(NoteSimilarity.note_id.in_(note_ids))
-    )
-    sim_map: dict[tuple[str, str], float] = {}
-    for s in sim_result.scalars().all():
-        pair = (min(s.note_id, s.similar_note_id), max(s.note_id, s.similar_note_id))
-        sim_map[pair] = max(sim_map.get(pair, 0), s.similarity_score)
 
-    # Count tag frequency across all notes for cluster assignment
-    tag_freq: dict[str, int] = {}
-    for tags in note_tags.values():
-        for t in tags:
-            tag_freq[t] = tag_freq.get(t, 0) + 1
-    top_tags_sorted = sorted(tag_freq.items(), key=lambda x: -x[1])
-    cluster_tags = [t for t, _ in top_tags_sorted[:len(_CLUSTER_COLORS)]]
-    cluster_color_map = {
-        tag: _CLUSTER_COLORS[i % len(_CLUSTER_COLORS)]
-        for i, tag in enumerate(cluster_tags)
-    }
+@router.get("/workspace", response_model=MindWorkspaceOut)
+async def get_workspace(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notes, note_tags, sim_map = await _load_mind_inputs(db, current_user.id)
+    snapshot = _build_graph_snapshot(notes, note_tags, sim_map)
 
-    # Assign each note to a cluster (its most frequent tag among cluster_tags)
-    def _note_cluster(nid: str) -> str | None:
-        tags = note_tags.get(nid, [])
-        for ct in cluster_tags:
-            if ct in tags:
-                return ct
-        return cluster_tags[0] if cluster_tags else None
+    node_map: dict[str, GraphNodeOut] = snapshot["node_map"]
+    edge_index: dict[str, list[dict[str, object]]] = snapshot["edge_index"]
+    note_map: dict[str, Note] = snapshot["note_map"]
+    note_clusters: dict[str, str | None] = snapshot["note_clusters"]
+    cluster_members: dict[str, list[str]] = snapshot["cluster_members"]
+    cluster_color_map: dict[str, str] = snapshot["cluster_color_map"]
 
-    # Build edges using inverted tag index (avoids O(n²) brute force)
-    tag_to_notes: dict[str, list[str]] = {}
-    for nid in note_ids:
-        for t in note_tags.get(nid, []):
-            tag_to_notes.setdefault(t, []).append(nid)
-
-    pair_shared: dict[tuple[str, str], int] = {}
-    for _tag, nids in tag_to_notes.items():
-        for i in range(len(nids)):
-            for j in range(i + 1, len(nids)):
-                pair = (min(nids[i], nids[j]), max(nids[i], nids[j]))
-                pair_shared[pair] = pair_shared.get(pair, 0) + 1
-
-    # Include high-similarity pairs without shared tags
-    for pair, sim_score in sim_map.items():
-        if pair not in pair_shared and sim_score * 5 >= _EDGE_MIN_STRENGTH:
-            pair_shared[pair] = 0
-
-    edge_list: list[dict] = []
-    for pair, shared_count in pair_shared.items():
-        sim_score = sim_map.get(pair, 0.0)
-        strength = shared_count * 2 + sim_score * 5
-        if strength < _EDGE_MIN_STRENGTH:
-            continue
-        relation = "hybrid"
-        if shared_count > 0 and sim_score <= 0:
-            relation = "co_occurrence"
-        elif shared_count <= 0 and sim_score > 0:
-            relation = "semantic_similarity"
-        edge_list.append({
-            "source": pair[0],
-            "target": pair[1],
-            "strength": round(strength, 2),
-            "relation": relation,
-            "co_occurrence_count": shared_count,
-            "content_similarity": round(sim_score, 3),
-            "shared_note_count": shared_count,
-        })
-
-    # Keep only the strongest edges
-    edge_list.sort(key=lambda x: -x["strength"])
-    edge_list = edge_list[:_EDGE_MAX_COUNT]
-
-    # Recompute degree from surviving edges only
-    edge_strength: dict[str, float] = {nid: 0.0 for nid in note_ids}
-    for e in edge_list:
-        edge_strength[e["source"]] += e["strength"]
-        edge_strength[e["target"]] += e["strength"]
-
-    # Layout: golden-angle spiral on sphere + force-directed refinement
-    n = len(notes)
-    sphere_radius = 180.0 + n * 6.0
-    golden_angle = math.pi * (3.0 - math.sqrt(5.0))
-
-    # Initial positions via golden-angle spiral on sphere
-    positions: dict[str, list[float]] = {}
-    for idx, nid in enumerate(note_ids):
-        theta = math.acos(1.0 - 2.0 * (idx + 0.5) / n)
-        phi = golden_angle * idx
-        x = sphere_radius * math.sin(theta) * math.cos(phi)
-        y = sphere_radius * math.cos(theta)
-        z = sphere_radius * math.sin(theta) * math.sin(phi)
-        positions[nid] = [x, y, z]
-
-    # Force-directed refinement: 15 iterations (reduced for speed)
-    # Connected notes attract, then project back to sphere
-    edge_index: dict[str, list[tuple[str, float]]] = {nid: [] for nid in note_ids}
-    for e in edge_list:
-        edge_index[e["source"]].append((e["target"], e["strength"]))
-        edge_index[e["target"]].append((e["source"], e["strength"]))
-
-    for _iteration in range(15):
-        displacements: dict[str, list[float]] = {nid: [0.0, 0.0, 0.0] for nid in note_ids}
-        for nid in note_ids:
-            px, py, pz = positions[nid]
-            for neighbor, strength in edge_index[nid]:
-                nx, ny, nz = positions[neighbor]
-                dx, dy, dz = nx - px, ny - py, nz - pz
-                dist = math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
-                # Attraction proportional to strength, capped
-                force = min(strength * 0.3, dist * 0.1)
-                displacements[nid][0] += dx / dist * force
-                displacements[nid][1] += dy / dist * force
-                displacements[nid][2] += dz / dist * force
-
-        # Apply displacements and project back to sphere
-        for nid in note_ids:
-            positions[nid][0] += displacements[nid][0]
-            positions[nid][1] += displacements[nid][1]
-            positions[nid][2] += displacements[nid][2]
-            # Project back to sphere surface
-            x, y, z = positions[nid]
-            mag = math.sqrt(x * x + y * y + z * z) or 1.0
-            positions[nid] = [
-                x / mag * sphere_radius,
-                y / mag * sphere_radius,
-                z / mag * sphere_radius,
-            ]
-
-    # Build node list — wider size range, stricter core threshold
-    max_tag_count = max((len(note_tags.get(nid, [])) for nid in note_ids), default=1) or 1
-    nodes = []
-    for idx, note in enumerate(notes):
-        nid = note.id
-        tag_count = len(note_tags.get(nid, []))
-        is_core = tag_count >= _CORE_TAG_THRESHOLD
-        # Size: 0.8 (leaf) to 5.0 (hub) — much wider range
-        size = round(0.8 + (tag_count / max_tag_count) * 3.2, 2)
-        if is_core:
-            size = round(size + 1.0, 2)
-        cluster = _note_cluster(nid)
-        color = cluster_color_map.get(cluster or "", "#9AA097")
-        px, py, pz = positions.get(nid, [0.0, 0.0, 0.0])
-        nodes.append(GraphNodeOut(
-            id=nid,
-            label=(note.title or "Untitled")[:20],
-            note_count=tag_count,
-            size=size,
-            color=color,
-            x=round(px, 2),
-            y=round(py, 2),
-            z=round(pz, 2),
-            rank=idx + 1,
-            degree=round(edge_strength.get(nid, 0.0), 2),
-            cluster=cluster,
-            is_core=is_core,
-        ))
-
-    edges = [
-        GraphEdgeOut(
-            source=e["source"],
-            target=e["target"],
-            strength=e["strength"],
-            relation=e["relation"],
-            co_occurrence_count=e["co_occurrence_count"],
-            content_similarity=e["content_similarity"],
-            shared_note_count=e["shared_note_count"],
+    if not notes:
+        return MindWorkspaceOut(
+            overview=MindWorkspaceOverviewOut(
+                total_notes=0,
+                cluster_count=0,
+                connected_note_count=0,
+                orphan_note_count=0,
+                bridge_note_count=0,
+            ),
+            clusters=[],
+            bridge_notes=[],
+            orphan_notes=[],
+            prompts=[],
         )
-        for e in sorted(edge_list, key=lambda x: -x["strength"])
+
+    clusters: list[MindClusterSummaryOut] = []
+    densest_cluster: str | None = None
+    densest_cluster_note_count = 0
+    for cluster, member_ids in sorted(
+        cluster_members.items(),
+        key=lambda item: (-len(item[1]), item[0]),
+    ):
+        member_nodes = [node_map[note_id] for note_id in member_ids if note_id in node_map]
+        member_notes = [note_map[note_id] for note_id in member_ids if note_id in note_map]
+        member_notes.sort(key=lambda note: note.updated_at, reverse=True)
+        spotlight_node = max(member_nodes, key=lambda node: (node.degree, node.note_count), default=None)
+        average_degree = (
+            round(sum(node.degree for node in member_nodes) / len(member_nodes), 2)
+            if member_nodes
+            else 0.0
+        )
+        clusters.append(
+            MindClusterSummaryOut(
+                id=cluster,
+                label=cluster,
+                color=cluster_color_map.get(cluster, "#9AA097"),
+                note_count=len(member_ids),
+                core_note_count=sum(1 for node in member_nodes if node.is_core),
+                average_degree=average_degree,
+                recent_titles=[note.title for note in member_notes[:3]],
+                spotlight_note_id=spotlight_node.id if spotlight_node else None,
+                spotlight_title=spotlight_node.label if spotlight_node else None,
+            )
+        )
+        if len(member_ids) > densest_cluster_note_count:
+            densest_cluster = cluster
+            densest_cluster_note_count = len(member_ids)
+
+    bridge_candidates: list[tuple[MindSpotlightNoteOut, int]] = []
+    orphan_notes: list[MindSpotlightNoteOut] = []
+    for note in notes:
+        related_edges = edge_index.get(note.id, [])
+        node = node_map.get(note.id)
+        note_cluster = note_clusters.get(note.id)
+        neighbor_clusters = {
+            note_clusters.get(
+                str(edge["target"]) if str(edge["source"]) == note.id else str(edge["source"])
+            )
+            for edge in related_edges
+        }
+        neighbor_clusters.discard(None)
+        if note_cluster in neighbor_clusters:
+            neighbor_clusters.discard(note_cluster)
+
+        spotlight = _build_spotlight_note(
+            note,
+            note_tags.get(note.id, []),
+            note_cluster,
+            node.degree if node else 0.0,
+            len(related_edges),
+        )
+        if not related_edges:
+            orphan_notes.append(spotlight)
+        if len(neighbor_clusters) >= 1:
+            bridge_candidates.append((spotlight, len(neighbor_clusters)))
+
+    bridge_candidates.sort(
+        key=lambda item: (-item[1], -item[0].degree, item[0].title.lower()),
+    )
+    bridge_notes = [item[0] for item in bridge_candidates[:3]]
+    orphan_notes.sort(key=lambda note: note.updated_at, reverse=True)
+    orphan_notes = orphan_notes[:3]
+
+    prompts = _build_workspace_prompts(
+        densest_cluster=densest_cluster,
+        densest_cluster_note_count=densest_cluster_note_count,
+        bridge_note=bridge_notes[0] if bridge_notes else None,
+        orphan_note_count=len([note for note in notes if not edge_index.get(note.id)]),
+    )
+
+    connected_note_count = sum(1 for note in notes if edge_index.get(note.id))
+    return MindWorkspaceOut(
+        overview=MindWorkspaceOverviewOut(
+            total_notes=len(notes),
+            cluster_count=len(clusters),
+            connected_note_count=connected_note_count,
+            orphan_note_count=len([note for note in notes if not edge_index.get(note.id)]),
+            bridge_note_count=len(bridge_candidates),
+        ),
+        clusters=clusters,
+        bridge_notes=bridge_notes,
+        orphan_notes=orphan_notes,
+        prompts=prompts,
+    )
+
+
+@router.get("/nodes/{node_id}/workspace", response_model=MindNodeWorkspaceOut)
+async def get_node_workspace(
+    node_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    notes, note_tags, sim_map = await _load_mind_inputs(db, current_user.id)
+    snapshot = _build_graph_snapshot(notes, note_tags, sim_map)
+
+    note_map: dict[str, Note] = snapshot["note_map"]
+    node_map: dict[str, GraphNodeOut] = snapshot["node_map"]
+    edge_index: dict[str, list[dict[str, object]]] = snapshot["edge_index"]
+    note_clusters: dict[str, str | None] = snapshot["note_clusters"]
+    cluster_members: dict[str, list[str]] = snapshot["cluster_members"]
+    cluster_color_map: dict[str, str] = snapshot["cluster_color_map"]
+
+    note = note_map.get(node_id)
+    node = node_map.get(node_id)
+    if not note or not node:
+        raise HTTPException(status_code=404, detail={"error": {"code": "NODE_NOT_FOUND", "message": "Node not found"}})
+
+    related_notes: list[MindRelatedNoteOut] = []
+    bridge_clusters = set()
+    for edge in sorted(edge_index.get(node_id, []), key=lambda item: -float(item["strength"]))[:6]:
+        other_id = str(edge["target"]) if str(edge["source"]) == node_id else str(edge["source"])
+        other_note = note_map.get(other_id)
+        other_node = node_map.get(other_id)
+        if not other_note or not other_node:
+            continue
+
+        other_cluster = note_clusters.get(other_id)
+        selected_cluster = note_clusters.get(node_id)
+        if other_cluster and other_cluster != selected_cluster:
+            bridge_clusters.add(other_cluster)
+
+        shared_tags = sorted(set(note_tags.get(node_id, [])) & set(note_tags.get(other_id, [])))
+        related_notes.append(
+            MindRelatedNoteOut(
+                id=other_note.id,
+                title=other_note.title,
+                snippet=_content_preview(other_note.markdown_content, max_len=170),
+                tags=note_tags.get(other_id, []),
+                cluster=other_cluster,
+                relation=str(edge["relation"]),
+                strength=float(edge["strength"]),
+                shared_tags=shared_tags,
+                content_similarity=float(edge["content_similarity"]),
+                updated_at=other_note.updated_at,
+            )
+        )
+
+    cluster_note_ids = [
+        member_id
+        for member_id in cluster_members.get(note_clusters.get(node_id) or "", [])
+        if member_id != node_id
+    ]
+    cluster_note_ids.sort(
+        key=lambda member_id: (
+            node_map.get(member_id).degree if node_map.get(member_id) else 0.0,
+            note_map.get(member_id).updated_at if note_map.get(member_id) else datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
+    )
+    cluster_notes = [
+        _build_spotlight_note(
+            note_map[member_id],
+            note_tags.get(member_id, []),
+            note_clusters.get(member_id),
+            node_map.get(member_id).degree if node_map.get(member_id) else 0.0,
+            len(edge_index.get(member_id, [])),
+        )
+        for member_id in cluster_note_ids[:5]
+        if member_id in note_map
     ]
 
-    focus_node_id = nodes[0].id if nodes else None
-    return GraphResponse(
-        nodes=nodes,
-        edges=edges,
-        core_mind_note_count=total_notes,
-        layout_seed=0,
-        focus_node_id=focus_node_id,
+    if related_notes:
+        if bridge_clusters:
+            focus_summary = (
+                f"This note anchors {note_clusters.get(node_id) or 'an emerging theme'} while also bridging "
+                f"{', '.join(sorted(bridge_clusters))}. It is a strong node for synthesis and cross-linking."
+            )
+        else:
+            focus_summary = (
+                f"This note sits inside {note_clusters.get(node_id) or 'a developing theme'} with "
+                f"{len(related_notes)} strong nearby notes. It is ready to be consolidated into a clearer thread."
+            )
+    else:
+        focus_summary = (
+            "This note is still isolated in your map. Add stronger tags or connect it to a neighboring idea to help it find a theme."
+        )
+
+    draft_heading = note_clusters.get(node_id) or note.title
+    draft_note_title = f"Theme Map — {draft_heading}"
+    related_markdown = "\n".join(
+        f"- **{related.title}** — {related.relation.replace('_', ' ')} · strength {related.strength:.1f}"
+        for related in related_notes[:4]
+    ) or "- No strong neighboring notes yet."
+    cluster_markdown = "\n".join(
+        f"- {cluster_note.title}"
+        for cluster_note in cluster_notes[:4]
+    ) or "- This theme only contains the focus note for now."
+    draft_markdown = (
+        f"# {draft_note_title}\n\n"
+        f"## Focus note\n"
+        f"- **{note.title}**\n"
+        f"- Theme: {note_clusters.get(node_id) or 'Unclustered'}\n"
+        f"- Connections: {len(edge_index.get(node_id, []))}\n\n"
+        f"## Why this node matters\n"
+        f"{focus_summary}\n\n"
+        f"## Nearby notes\n"
+        f"{related_markdown}\n\n"
+        f"## Cluster threads\n"
+        f"{cluster_markdown}\n\n"
+        f"## Next moves\n"
+        f"- Clarify the central question behind this theme.\n"
+        f"- Merge overlapping notes into one stronger synthesis.\n"
+        f"- Decide whether this thread should become an Insight or a Ground post.\n"
+    )
+
+    return MindNodeWorkspaceOut(
+        node=MindNodeWorkspaceNoteOut(
+            id=note.id,
+            title=note.title,
+            snippet=_content_preview(note.markdown_content, max_len=280),
+            tags=note_tags.get(node_id, []),
+            cluster=note_clusters.get(node_id),
+            color=cluster_color_map.get(note_clusters.get(node_id) or "", "#9AA097"),
+            is_core=node.is_core,
+            degree=node.degree,
+            connection_count=len(edge_index.get(node_id, [])),
+            bridge_clusters=sorted(bridge_clusters),
+            created_at=note.created_at,
+            updated_at=note.updated_at,
+        ),
+        related_notes=related_notes,
+        cluster_notes=cluster_notes,
+        focus_summary=focus_summary,
+        draft_note_title=draft_note_title,
+        draft_markdown=draft_markdown,
     )
 
 
@@ -355,65 +748,48 @@ async def get_node_notes(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Get notes for a specific graph node (by tag label derived from node_id)."""
-    tag_result = await db.execute(
-        select(NoteTag.tag)
-        .join(Note)
-        .where(Note.user_id == current_user.id)
-        .distinct()
-    )
-    tag = next(
-        (
-            value
-            for (value,) in tag_result.all()
-            if str(uuid.uuid5(uuid.NAMESPACE_DNS, value)) == node_id
-        ),
-        None,
-    )
+    """Return peer notes from the same dominant cluster as the selected graph node."""
+    notes, note_tags, sim_map = await _load_mind_inputs(db, current_user.id)
+    snapshot = _build_graph_snapshot(notes, note_tags, sim_map)
+    note_map: dict[str, Note] = snapshot["note_map"]
+    note_clusters: dict[str, str | None] = snapshot["note_clusters"]
+    node_map: dict[str, GraphNodeOut] = snapshot["node_map"]
+    cluster_members: dict[str, list[str]] = snapshot["cluster_members"]
 
-    if not tag:
+    if node_id not in note_map:
         raise HTTPException(status_code=404, detail={"error": {"code": "NODE_NOT_FOUND", "message": "Node not found"}})
 
-    # Get notes with this tag
-    query = (
-        select(Note)
-        .join(NoteTag)
-        .where(Note.user_id == current_user.id, NoteTag.tag == tag)
-        .order_by(Note.created_at.desc())
+    cluster = note_clusters.get(node_id)
+    member_ids = [member_id for member_id in cluster_members.get(cluster or "", []) if member_id != node_id]
+    member_ids.sort(
+        key=lambda member_id: (
+            node_map.get(member_id).degree if node_map.get(member_id) else 0.0,
+            note_map.get(member_id).updated_at if note_map.get(member_id) else datetime.min.replace(tzinfo=timezone.utc),
+        ),
+        reverse=True,
     )
 
-    count_q = select(func.count()).select_from(query.subquery())
-    total = (await db.execute(count_q)).scalar() or 0
-
-    query = query.offset((page - 1) * page_size).limit(page_size)
-    notes = (await db.execute(query)).scalars().all()
-    note_ids = [note.id for note in notes]
-
-    note_tags: dict[str, list[str]] = {}
-    if note_ids:
-        tags_result = await db.execute(
-            select(NoteTag.note_id, NoteTag.tag).where(NoteTag.note_id.in_(note_ids))
-        )
-        for note_id_value, note_tag in tags_result.all():
-            note_tags.setdefault(note_id_value, []).append(note_tag)
-
+    total = len(member_ids)
+    start = (page - 1) * page_size
+    selected_ids = member_ids[start : start + page_size]
     return MindNodeNotesResponse(
         node_id=node_id,
-        tag=tag,
+        tag=cluster or "",
         total=total,
         page=page,
         page_size=page_size,
         items=[
             MindNodeNoteOut(
-                id=n.id,
-                title=n.title,
-                status=n.status.value,
-                tags=sorted(note_tags.get(n.id, [])),
-                created_at=n.created_at,
-                updated_at=n.updated_at,
-                snippet=((n.markdown_content or "")[:180].replace("\n", " ").strip()),
+                id=note_map[selected_id].id,
+                title=note_map[selected_id].title,
+                status=note_map[selected_id].status.value,
+                tags=note_tags.get(selected_id, []),
+                created_at=note_map[selected_id].created_at,
+                updated_at=note_map[selected_id].updated_at,
+                snippet=_content_preview(note_map[selected_id].markdown_content, max_len=180),
             )
-            for n in notes
+            for selected_id in selected_ids
+            if selected_id in note_map
         ],
     )
 

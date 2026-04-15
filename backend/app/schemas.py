@@ -330,6 +330,91 @@ class SynthesisUpdateOut(BaseModel):
     created_at: datetime
 
 
+class MindWorkspaceOverviewOut(BaseModel):
+    total_notes: int
+    cluster_count: int
+    connected_note_count: int
+    orphan_note_count: int
+    bridge_note_count: int
+
+
+class MindWorkspacePromptOut(BaseModel):
+    id: str
+    title: str
+    description: str
+    target_node_id: str | None = None
+    target_cluster: str | None = None
+
+
+class MindSpotlightNoteOut(BaseModel):
+    id: str
+    title: str
+    snippet: str
+    tags: list[str]
+    cluster: str | None = None
+    degree: float = 0
+    connection_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class MindClusterSummaryOut(BaseModel):
+    id: str
+    label: str
+    color: str
+    note_count: int
+    core_note_count: int
+    average_degree: float
+    recent_titles: list[str]
+    spotlight_note_id: str | None = None
+    spotlight_title: str | None = None
+
+
+class MindWorkspaceOut(BaseModel):
+    overview: MindWorkspaceOverviewOut
+    clusters: list[MindClusterSummaryOut]
+    bridge_notes: list[MindSpotlightNoteOut]
+    orphan_notes: list[MindSpotlightNoteOut]
+    prompts: list[MindWorkspacePromptOut]
+
+
+class MindRelatedNoteOut(BaseModel):
+    id: str
+    title: str
+    snippet: str
+    tags: list[str]
+    cluster: str | None = None
+    relation: str
+    strength: float
+    shared_tags: list[str]
+    content_similarity: float = 0
+    updated_at: datetime
+
+
+class MindNodeWorkspaceNoteOut(BaseModel):
+    id: str
+    title: str
+    snippet: str
+    tags: list[str]
+    cluster: str | None = None
+    color: str = "#999999"
+    is_core: bool = False
+    degree: float = 0
+    connection_count: int = 0
+    bridge_clusters: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class MindNodeWorkspaceOut(BaseModel):
+    node: MindNodeWorkspaceNoteOut
+    related_notes: list[MindRelatedNoteOut]
+    cluster_notes: list[MindSpotlightNoteOut]
+    focus_summary: str
+    draft_note_title: str
+    draft_markdown: str
+
+
 # ── Insights ──────────────────────────────────────────
 
 class InsightOut(BaseModel):
