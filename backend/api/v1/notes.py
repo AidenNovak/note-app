@@ -347,7 +347,20 @@ async def create_note(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    note_id = str(uuid.uuid4())
+    # Idempotency: if client supplies a client_id and we already have a note
+    # with that id for this user, return it unchanged. Client-generated UUIDs
+    # let the offline queue safely retry POST /notes.
+    note_id = body.client_id or str(uuid.uuid4())
+    if body.client_id:
+        existing = await db.execute(
+            select(Note)
+            .options(selectinload(Note.tags), selectinload(Note.attachments))
+            .where(Note.id == body.client_id, Note.user_id == current_user.id)
+        )
+        existing_note = existing.scalar_one_or_none()
+        if existing_note is not None:
+            return _build_note_out(existing_note)
+
     await _validate_folder_access(db, current_user.id, body.folder_id)
 
     # Fast path: resolve title only, skip AI tagging to avoid blocking

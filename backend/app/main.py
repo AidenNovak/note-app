@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.config import running_on_vercel, settings
-from app.database import init_db, ping_db
+from app.database import init_db, ping_db, warm_pool
 from app.logging_config import logger
 from app.middleware import (
     SecurityHeadersMiddleware,
@@ -51,6 +51,12 @@ async def lifespan(app: FastAPI):
             logger.info("database_initialized")
         except Exception:
             logger.exception("database_initialization_failed")
+    # Warm the connection pool so the first user-facing request doesn't pay the
+    # ~1.5-2s Supavisor cold-connect tax. Non-blocking best effort.
+    try:
+        await warm_pool(target=5)
+    except Exception:
+        logger.exception("pool_warm_error")
     yield
     logger.info("application_shutdown")
 

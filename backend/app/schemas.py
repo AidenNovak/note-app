@@ -63,6 +63,11 @@ class FileOut(BaseModel):
 # ── Notes ──────────────────────────────────────────────
 
 class NoteCreate(BaseModel):
+    # Optional client-generated UUID for idempotent retries.
+    # When set, server will return the existing note if one already exists with
+    # the same (user_id, client_id) — makes POST /notes safe to retry from the
+    # native offline queue without creating duplicates.
+    client_id: str | None = Field(default=None, min_length=8, max_length=64)
     title: str | None = Field(default=None, min_length=1, max_length=255)
     markdown_content: str | None = None
     folder_id: str | None = None
