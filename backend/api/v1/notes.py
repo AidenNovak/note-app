@@ -529,63 +529,72 @@ async def delete_note(
             detail={"error": {"code": "NOTE_NOT_FOUND", "message": "Note not found"}},
         )
 
-    # Bulk-delete all related records to avoid ORM-level N+1 cascade loading.
-    # Tables without DB-level ON DELETE CASCADE are handled explicitly.
-    await db.execute(NoteTag.__table__.delete().where(NoteTag.__table__.c.note_id == note_id))
-    await db.execute(NoteVersion.__table__.delete().where(NoteVersion.__table__.c.note_id == note_id))
-    await db.execute(ProcessingTask.__table__.delete().where(ProcessingTask.__table__.c.note_id == note_id))
-    await db.execute(File.__table__.delete().where(File.__table__.c.note_id == note_id))
-    await db.execute(
-        NoteEmbedding.__table__.delete().where(NoteEmbedding.__table__.c.note_id == note_id)
-    )
-    await db.execute(
-        NoteSimilarity.__table__.delete().where(
-            or_(
-                NoteSimilarity.__table__.c.note_id == note_id,
-                NoteSimilarity.__table__.c.similar_note_id == note_id,
-            )
-        )
-    )
-    await db.execute(
-        MindConnection.__table__.delete().where(
-            or_(
-                MindConnection.__table__.c.note_a_id == note_id,
-                MindConnection.__table__.c.note_b_id == note_id,
-            )
-        )
-    )
-    await db.execute(
-        InsightEvidenceItem.__table__.delete().where(
-            InsightEvidenceItem.__table__.c.note_id == note_id
-        )
-    )
+    # Bulk-delete all related records in parallel batches to minimize round-trips.
+    # Group independent tables into concurrent coroutines.
+    import asyncio
 
-    # shared_notes -> note_likes (no DB cascade)
-    await db.execute(
-        NoteLike.__table__.delete().where(
-            NoteLike.__table__.c.shared_note_id.in_(
-                select(SharedNote.__table__.c.id).where(SharedNote.__table__.c.note_id == note_id)
-            )
-        )
-    )
-    await db.execute(SharedNote.__table__.delete().where(SharedNote.__table__.c.note_id == note_id))
-
-    # ground_posts -> ground_post_likes (no DB cascade)
-    await db.execute(
-        GroundPostLike.__table__.delete().where(
-            GroundPostLike.__table__.c.post_id.in_(
-                select(GroundPost.__table__.c.id).where(
-                    GroundPost.__table__.c.ref_id == note_id,
-                    GroundPost.__table__.c.post_type == "note",
+    # Batch 1: tables that don't depend on each other
+    await asyncio.gather(
+        db.execute(NoteTag.__table__.delete().where(NoteTag.__table__.c.note_id == note_id)),
+        db.execute(NoteVersion.__table__.delete().where(NoteVersion.__table__.c.note_id == note_id)),
+        db.execute(ProcessingTask.__table__.delete().where(ProcessingTask.__table__.c.note_id == note_id)),
+        db.execute(File.__table__.delete().where(File.__table__.c.note_id == note_id)),
+        db.execute(
+            NoteEmbedding.__table__.delete().where(NoteEmbedding.__table__.c.note_id == note_id)
+        ),
+        db.execute(
+            NoteSimilarity.__table__.delete().where(
+                or_(
+                    NoteSimilarity.__table__.c.note_id == note_id,
+                    NoteSimilarity.__table__.c.similar_note_id == note_id,
                 )
             )
-        )
+        ),
+        db.execute(
+            MindConnection.__table__.delete().where(
+                or_(
+                    MindConnection.__table__.c.note_a_id == note_id,
+                    MindConnection.__table__.c.note_b_id == note_id,
+                )
+            )
+        ),
+        db.execute(
+            InsightEvidenceItem.__table__.delete().where(
+                InsightEvidenceItem.__table__.c.note_id == note_id
+            )
+        ),
     )
-    await db.execute(
-        GroundPost.__table__.delete().where(
-            GroundPost.__table__.c.ref_id == note_id,
-            GroundPost.__table__.c.post_type == "note",
-        )
+
+    # Batch 2: shared_notes depends on note_likes (FK), ground_posts on ground_post_likes
+    await asyncio.gather(
+        db.execute(
+            NoteLike.__table__.delete().where(
+                NoteLike.__table__.c.shared_note_id.in_(
+                    select(SharedNote.__table__.c.id).where(SharedNote.__table__.c.note_id == note_id)
+                )
+            )
+        ),
+        db.execute(
+            GroundPostLike.__table__.delete().where(
+                GroundPostLike.__table__.c.post_id.in_(
+                    select(GroundPost.__table__.c.id).where(
+                        GroundPost.__table__.c.ref_id == note_id,
+                        GroundPost.__table__.c.post_type == "note",
+                    )
+                )
+            )
+        ),
+    )
+
+    # Batch 3: now safe to delete the parent rows
+    await asyncio.gather(
+        db.execute(SharedNote.__table__.delete().where(SharedNote.__table__.c.note_id == note_id)),
+        db.execute(
+            GroundPost.__table__.delete().where(
+                GroundPost.__table__.c.ref_id == note_id,
+                GroundPost.__table__.c.post_type == "note",
+            )
+        ),
     )
 
     # Finally delete the note itself in a single statement
