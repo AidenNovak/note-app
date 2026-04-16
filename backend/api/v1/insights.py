@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -16,6 +18,7 @@ from app.intelligence.insights.share_cards import render_share_card_png
 from app.models import InsightGeneration, TaskStatus, User
 from app.schemas import InsightDetailOut, InsightGenerationOut, InsightOut, StatusResponse
 from app.intelligence.insights.service import (
+    build_terminal_event,
     build_report_detail,
     broadcast_log,
     create_generation,
@@ -30,6 +33,7 @@ from app.intelligence.insights.service import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/insights", tags=["insights"])
+STREAM_STATUS_POLL_INTERVAL_SECONDS = 2.0
 
 
 @router.get("/generations/{generation_id}/stream")
@@ -46,14 +50,38 @@ async def stream_generation_logs(
             InsightGeneration.user_id == current_user.id,
         )
     )
-    if not result.scalar_one_or_none():
+    generation = result.scalar_one_or_none()
+    if generation is None:
         raise HTTPException(status_code=404, detail={"error": {"code": "GENERATION_NOT_FOUND", "message": "Generation not found"}})
 
     async def event_generator():
+        terminal_event = build_terminal_event(generation)
+        if terminal_event is not None:
+            yield f"data: {json.dumps(terminal_event)}\n\n"
+            return
+
         queue = subscribe_to_generation(generation_id)
         try:
             while True:
-                event = await queue.get()
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=STREAM_STATUS_POLL_INTERVAL_SECONDS)
+                except asyncio.TimeoutError:
+                    # Use a fresh DB session because the injected session may be closed
+                    # while the streaming response is active.
+                    async with async_session() as inner_db:
+                        result = await inner_db.execute(
+                            select(InsightGeneration).where(
+                                InsightGeneration.id == generation_id,
+                                InsightGeneration.user_id == current_user.id,
+                            )
+                        )
+                        refreshed = result.scalar_one_or_none()
+                        if refreshed is None:
+                            continue
+                        terminal_event = build_terminal_event(refreshed)
+                        if terminal_event is None:
+                            continue
+                        event = terminal_event
                 yield f"data: {json.dumps(event)}\n\n"
                 if event.get("type") in ("completed", "error"):
                     break
@@ -97,7 +125,7 @@ async def download_insight_share_card(
         )
 
     detail = await build_report_detail(db, current_user.id, report)
-    image_bytes = render_share_card_png(detail.share_card)
+    image_bytes = await run_in_threadpool(render_share_card_png, detail.share_card)
     safe_name = "".join(char if char.isascii() and char.isalnum() else "_" for char in detail.title).strip("_") or "insight"
     return Response(
         content=image_bytes,
@@ -130,43 +158,52 @@ async def get_insight_detail(
 
 async def _background_generate_clustered(generation_id: str) -> None:
     """Run clustered pipeline in its own db session."""
-    from app.intelligence.insights.clustered_pipeline import run_clustered_pipeline
-    from app.notifications.triggers import notify_insight_ready
-
     async with async_session() as db:
         generation = await db.get(InsightGeneration, generation_id)
         if generation is None:
             return
         user_id = generation.user_id
-        generation.status = TaskStatus.PROCESSING
-        generation.workflow_version = "clustered-v1"
-        await db.commit()
         try:
+            generation.status = TaskStatus.PROCESSING
+            generation.workflow_version = "clustered-v1"
+            await db.commit()
+
+            from app.intelligence.insights.clustered_pipeline import run_clustered_pipeline
+            from app.notifications.triggers import notify_insight_ready
+
             await run_clustered_pipeline(db, generation)
-            # Notify user that insight is ready
-            await notify_insight_ready(
-                db, user_id, generation_id,
-                generation.summary or "你的洞察分析已完成",
-            )
+            # Notify user that insight is ready (use a fresh session in case the
+            # original connection was dropped during the long LLM phase)
+            async with async_session() as notify_db:
+                notify_gen = await notify_db.get(InsightGeneration, generation_id)
+                if notify_gen is not None:
+                    await notify_insight_ready(
+                        notify_db, user_id, generation_id,
+                        notify_gen.summary or "你的洞察分析已完成",
+                    )
         except Exception as exc:
             logger.exception("Clustered pipeline failed for %s", generation_id)
-            generation.status = TaskStatus.FAILED
-            generation.error = str(exc)[:500]
-            generation.is_active = False
-            await db.commit()
+            # Use a fresh session for error handling to avoid hanging on a stale connection
+            async with async_session() as err_db:
+                generation = await err_db.get(InsightGeneration, generation_id)
+                if generation is not None:
+                    generation.status = TaskStatus.FAILED
+                    generation.error = str(exc)[:500]
+                    generation.is_active = False
+                    generation.completed_at = datetime.now(timezone.utc)
+                    await err_db.commit()
             await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
 
 
 @router.post("/generate/clustered", response_model=InsightGenerationOut, status_code=status.HTTP_202_ACCEPTED)
 async def generate_insights_clustered(
-    background_tasks: BackgroundTasks,
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     """Generate insights via graph-clustered pipeline. Uses Louvain community detection + parallel generation."""
     generation, created = await create_generation(db, current_user.id)
     if created:
-        background_tasks.add_task(_background_generate_clustered, generation.id)
+        asyncio.create_task(_background_generate_clustered(generation.id))
     return serialize_generation(generation)
 
 
