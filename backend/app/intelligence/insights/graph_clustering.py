@@ -235,19 +235,24 @@ async def cluster_notes(
 
     Returns (clusters, all_notes, note_tags).
     """
+    import asyncio
+
     notes, connections, note_tags = await fetch_graph_data(db, user_id)
     if not notes:
         return [], [], {}
 
     all_note_ids = {n["id"] for n in notes}
-    G = build_graph(connections)
+    # Run CPU-intensive graph operations in a thread to avoid blocking the event loop
+    G = await asyncio.to_thread(build_graph, connections)
 
     logger.info(
         "Graph built: %d nodes, %d edges from %d connections (%d total notes)",
         G.number_of_nodes(), G.number_of_edges(), len(connections), len(notes),
     )
 
-    clusters = detect_communities(G, all_note_ids, note_tags, connections)
+    clusters = await asyncio.to_thread(
+        detect_communities, G, all_note_ids, note_tags, connections
+    )
 
     logger.info(
         "Detected %d communities: %s",

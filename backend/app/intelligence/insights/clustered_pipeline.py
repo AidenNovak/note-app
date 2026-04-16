@@ -50,6 +50,33 @@ MAX_NOTES_PER_ANGLE = 8
 MAX_CONTENT_CHARS_PER_ANGLE = 15000
 
 
+def _build_fallback_angles(clusters: list[NoteCluster]) -> list[AngleOutput]:
+    """Build deterministic analysis angles when LLM angle discovery fails."""
+    type_hints = ["pattern", "connection", "trend", "gap", "synthesis"]
+    angles: list[AngleOutput] = []
+
+    ranked_clusters = sorted(clusters, key=lambda cluster: len(cluster.note_ids), reverse=True)[:MAX_ANGLES]
+    for idx, cluster in enumerate(ranked_clusters):
+        top_tags = [tag for tag in cluster.shared_tags if tag][:2]
+        angle_name = " / ".join(top_tags) if top_tags else f"主题 {idx + 1}"
+        cluster_size = len(cluster.note_ids)
+        description = (
+            f"梳理围绕“{angle_name}”主题的共同模式、关键张力与下一步行动。"
+            if cluster_size > 1
+            else f"从“{angle_name}”这条孤立线索出发，提炼它最值得扩展的方向。"
+        )
+        angles.append(
+            AngleOutput(
+                angle_name=angle_name[:24],
+                description=description,
+                note_ids=cluster.note_ids[: max(MAX_NOTES_PER_ANGLE, 5)],
+                type_hint=type_hints[idx % len(type_hints)],
+            )
+        )
+
+    return angles
+
+
 def _build_cluster_summary(
     clusters: list[NoteCluster],
     notes: list[dict],
@@ -199,6 +226,10 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
 
     clusters, all_notes, note_tags = await cluster_notes(db, user_id)
 
+    # Release the read-only transaction immediately so the connection isn't
+    # held idle-in-transaction while we do synchronous data prep.
+    await db.rollback()
+
     if not all_notes:
         raise RuntimeError("请先添加一些笔记再生成洞察。")
 
@@ -240,11 +271,19 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
 
     logger.info("Angle discovery: %d clusters, requesting %d angles", len(clusters), num_angles)
 
-    angle_result = await discover_angles(
-        cluster_summaries=cluster_summary,
-        num_angles=num_angles,
-    )
-    angles = angle_result.angles[:MAX_ANGLES]
+    try:
+        angle_result = await discover_angles(
+            cluster_summaries=cluster_summary,
+            num_angles=num_angles,
+        )
+        angles = angle_result.angles[:MAX_ANGLES]
+    except Exception as exc:
+        logger.warning("Angle discovery failed; using deterministic fallback: %s", exc)
+        await broadcast_log(generation_id, {
+            "type": "progress",
+            "message": "AI 角度发现失败，切换到启发式分析...",
+        })
+        angles = _build_fallback_angles(clusters)
 
     # Validate note_ids in each angle (remove invalid ones)
     valid_note_ids = set(note_map.keys())
@@ -255,7 +294,10 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
     angles = [a for a in angles if a.note_ids]
 
     if not angles:
-        raise RuntimeError("LLM 未能发现有效的分析角度。")
+        angles = _build_fallback_angles(clusters)
+        angles = [a for a in angles if a.note_ids]
+    if not angles:
+        raise RuntimeError("未能发现有效的分析角度。")
 
     await broadcast_log(generation_id, {
         "type": "agent_turn",
@@ -271,6 +313,11 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
         ],
         "message": f"发现 {len(angles)} 个分析角度",
     })
+
+    # Close the read-only DB transaction before long-running LLM calls so the
+    # connection isn't idle-in-transaction while waiting for OpenRouter (avoids
+    # pgbouncer/proxy disconnects).
+    await db.rollback()
 
     # ── Phase 2: Parallel report generation ──
     tasks = [
@@ -292,7 +339,13 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
         raise RuntimeError("所有报告生成均失败。")
 
     # ── Phase 3: Persist ──
-    await _persist_clustered_reports(db, generation, reports, all_notes)
+    # Use a fresh DB session for persistence so we aren't re-using a connection
+    # that may have been dropped during the LLM phase.
+    async with async_session() as persist_db:
+        generation_for_persist = await persist_db.get(InsightGeneration, generation_id)
+        if generation_for_persist is None:
+            raise RuntimeError("Generation not found during persist")
+        await _persist_clustered_reports(persist_db, generation_for_persist, reports, all_notes)
 
 
 async def _persist_clustered_reports(
