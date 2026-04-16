@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +21,8 @@ from app.models import (
 )
 
 WORKFLOW_VERSION = "clustered-v1"
+STALE_PENDING_TIMEOUT = timedelta(seconds=45)
+STALE_PROCESSING_TIMEOUT = timedelta(minutes=20)
 
 
 async def get_latest_generation(db: AsyncSession, user_id: str) -> InsightGeneration | None:
@@ -47,10 +50,33 @@ async def get_active_generation(db: AsyncSession, user_id: str) -> InsightGenera
     return result.scalar_one_or_none()
 
 
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _is_stale_generation(generation: InsightGeneration, now: datetime) -> bool:
+    age = _as_utc(now) - _as_utc(generation.updated_at or generation.created_at)
+    if generation.status == TaskStatus.PENDING:
+        return age > STALE_PENDING_TIMEOUT
+    if generation.status == TaskStatus.PROCESSING:
+        return age > STALE_PROCESSING_TIMEOUT
+    return False
+
+
 async def create_generation(db: AsyncSession, user_id: str) -> tuple[InsightGeneration, bool]:
     existing = await get_active_generation(db, user_id)
     if existing is not None:
-        return existing, False
+        now = datetime.now(timezone.utc)
+        if not _is_stale_generation(existing, now):
+            return existing, False
+
+        existing.status = TaskStatus.FAILED
+        existing.error = "Previous insight generation was interrupted before completion."
+        existing.is_active = False
+        existing.completed_at = now
+        await db.commit()
 
     generation = InsightGeneration(
         id=str(uuid.uuid4()),
@@ -100,6 +126,21 @@ async def get_report(db: AsyncSession, user_id: str, report_id: str) -> InsightR
 
 _log_queues: dict[str, list[asyncio.Queue]] = defaultdict(list)
 _event_buffers: dict[str, list[dict]] = defaultdict(list)
+_terminal_events: dict[str, dict[str, object]] = {}
+
+
+def build_terminal_event(generation: InsightGeneration) -> dict[str, object] | None:
+    if generation.status == TaskStatus.COMPLETED:
+        return {
+            "type": "completed",
+            "summary": generation.summary,
+        }
+    if generation.status == TaskStatus.FAILED:
+        return {
+            "type": "error",
+            "message": (generation.error or "Generation failed")[:300],
+        }
+    return None
 
 
 def subscribe_to_generation(generation_id: str) -> asyncio.Queue:
@@ -107,6 +148,9 @@ def subscribe_to_generation(generation_id: str) -> asyncio.Queue:
     # Replay buffered events so late subscribers don't miss anything
     for event in _event_buffers.get(generation_id, []):
         queue.put_nowait(event)
+    terminal_event = _terminal_events.get(generation_id)
+    if terminal_event is not None:
+        queue.put_nowait(terminal_event)
     _log_queues[generation_id].append(queue)
     return queue
 
@@ -122,10 +166,10 @@ def unsubscribe_from_generation(generation_id: str, queue: asyncio.Queue) -> Non
 
 async def broadcast_log(generation_id: str, event: dict[str, object]) -> None:
     # Buffer non-token events for late subscribers (tokens are too many to buffer)
-    if event.get("type") != "token":
-        _event_buffers[generation_id].append(event)
-    # Clean up buffer on terminal events
     if event.get("type") in ("completed", "error"):
+        _terminal_events[generation_id] = event
         _event_buffers.pop(generation_id, None)
+    elif event.get("type") != "token":
+        _event_buffers[generation_id].append(event)
     for queue in _log_queues.get(generation_id, []):
         await queue.put(event)

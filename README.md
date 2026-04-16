@@ -1,99 +1,125 @@
 # atélier — Your Second Digital Mind
 
-iOS 笔记应用：Expo (React Native) + FastAPI 后端。
+Native-first note app: Expo iOS client + FastAPI backend.
 
-## 架构
+## Architecture
 
-```
+```text
 note-app/
-├── backend/          FastAPI 后端 (Railway: backend.jilly.app)
-├── easystarter/      Native App monorepo (独立 git)
-│   ├── apps/native/  Expo 55 + React Native 0.83 (iOS)
-│   └── packages/     共享包 (i18n / app-config / shared)
-├── jilly/            Landing Page (React + Vite, 仅营销)
-└── design-docs/      设计文档
+├── backend/          FastAPI backend (Railway: backend.jilly.app)
+├── easystarter/      Native workspace (separate git repo)
+│   ├── apps/native/  Expo 55 + React Native 0.83 app
+│   └── packages/     Shared packages used by native
+├── jilly/            Simple landing / legal site
+└── design-docs/      Product and design docs
 ```
 
-### 技术栈
+## Current stack
 
-| 层 | 技术 |
-|---|------|
-| **iOS 客户端** | Expo 55, React Native 0.83, TypeScript 5.9, React Query v5 |
-| **后端** | FastAPI, SQLAlchemy 2.0, Alembic, PostgreSQL (Railway) |
-| **存储** | Cloudflare R2 (S3 API) |
-| **认证** | JWT (HS256) + OAuth (Apple/Google/GitHub) |
-| **支付** | RevenueCat (iOS IAP) + Stripe (webhook) |
-| **AI** | OpenRouter (Kimi K2.5), OpenAI Whisper, text-embedding-3-small |
-| **推送** | Expo Push Notifications |
-| **邮件** | Resend |
+| Layer | Current runtime |
+|---|---|
+| **Native app** | Expo 55, Expo Router, React Native 0.83, React 19, TanStack Query |
+| **Backend** | FastAPI, SQLAlchemy 2, Alembic |
+| **Database** | SQLite for local dev, **Supabase PostgreSQL (Singapore, ap-southeast-1)** in production, pooled via Supavisor |
+| **File storage** | Local filesystem in dev, Cloudflare R2 for production file APIs |
+| **Auth** | JWT + Apple / Google / GitHub OAuth |
+| **Payments** | RevenueCat (native IAP) + Stripe webhooks |
+| **AI** | OpenRouter chat + embeddings, OpenAI Whisper |
+| **Notifications** | Expo push tokens + backend notification APIs |
+| **Email** | Resend |
 
-## 快速开始
+## Quick start
 
-### 1) 后端
+### 1. Backend
 
 ```bash
 make backend-install
-make backend-dev          # http://localhost:8000
+make backend-dev
 ```
 
-### 2) Native (iOS)
+Local backend runs on `http://localhost:8000`.
+
+### 2. Native
 
 ```bash
 make native-install
-make native-dev           # Expo → iOS 模拟器
+make native-dev
 ```
 
-### 3) 同时启动
+### 3. Run both
 
 ```bash
-make install              # 安装 backend + native
-make dev                  # 并行启动 backend + native
+make install
+make dev
 ```
 
-### 4) 环境变量
+## Environment variables
 
-**后端** (`backend/.env`):
+### Backend (`backend/.env`)
+
+For local development, the backend defaults to SQLite:
 
 ```bash
-APP_ENV=production
-SECRET_KEY=<cryptographically-random-32+chars>
-DATABASE_URL=postgresql+asyncpg://...
+APP_ENV=development
+SECRET_KEY=<secure-random-string>
+DATABASE_URL=sqlite+aiosqlite:///./data/notes.db
+STORAGE_PATH=./data/files
+EASYSTARTER_SERVER_URL=http://localhost:8000
+FRONTEND_URL=https://app.jilly.app
 OPENROUTER_API_KEY=sk-or-...
 OPENAI_API_KEY=sk-...
 R2_ACCOUNT_ID=...
 R2_ACCESS_KEY_ID=...
 R2_SECRET_ACCESS_KEY=...
-R2_BUCKET_NAME=atelier-files
+R2_BUCKET_NAME=atelier-bucket
 RESEND_API_KEY=re_...
 STRIPE_SECRET_KEY=sk_...
+STRIPE_WEBHOOK_SECRET=whsec_...
 REVENUECAT_WEBHOOK_AUTHORIZATION=...
 APPLE_APP_BUNDLE_IDENTIFIER=app.jilly.atelier
 ```
 
-**Native** (`easystarter/apps/native/.env`):
+In production, switch `DATABASE_URL` to PostgreSQL, typically:
 
 ```bash
-EXPO_PUBLIC_API_BASE_URL=https://backend.jilly.app
-EXPO_PUBLIC_PROJECT_ID=6b054564-fb28-40dc-9f93-88029cd5facb
+DATABASE_URL=postgresql+asyncpg://...
+EASYSTARTER_SERVER_URL=https://backend.jilly.app
 ```
 
-## 开发命令
+### Native (`easystarter/apps/native/.env.development.local`)
 
 ```bash
-make backend-lint         # Ruff 代码检查
-make backend-test         # Pytest 单元/集成测试
-cd easystarter && pnpm -F native lint          # Native lint
-cd easystarter/apps/native && pnpm exec tsc --noEmit  # TS 类型检查
+EXPO_PUBLIC_ATELIER_API_URL=https://backend.jilly.app
+EXPO_PUBLIC_WEB_APP_URL=https://app.jilly.app
+EXPO_PUBLIC_PROJECT_ID=<expo-project-id>
+EXPO_PUBLIC_REVENUECAT_IOS_API_KEY=<revenuecat-ios-public-key>
+EXPO_PUBLIC_REVENUECAT_ENTITLEMENT_ID=pro
 ```
 
-## TestFlight 发布
+If you want local simulator builds to behave like TestFlight, point
+`EXPO_PUBLIC_ATELIER_API_URL` at the same deployed backend.
+
+## Development commands
+
+```bash
+make backend-lint
+make backend-test
+cd easystarter && pnpm lint
+cd easystarter && pnpm check-types
+cd easystarter/apps/native && pnpm ios
+```
+
+## TestFlight
 
 ```bash
 cd easystarter/apps/native
-eas build --platform ios --profile production --auto-submit
+pnpm eas:build:ios:production
+pnpm eas:submit:ios:production
 ```
 
-## 部署
+## Deployment
 
-- **后端**: Railway (`backend.jilly.app`), Dockerfile 构建, 健康检查 `/health`
-- **Landing Page**: `cd jilly && npx vite build` → 静态部署
+- **Backend app**: Railway (region `asia-southeast1-eqsg3a`, Singapore), health endpoint at `/health`, DB-aware readiness at `/ready`
+- **Production database**: Supabase PostgreSQL (Singapore, `ap-southeast-1`) via Supavisor
+- **File storage**: Cloudflare R2 (public CDN: `cdn.jilly.app`)
+- **Landing / legal web**: `jilly/`, built and deployed separately

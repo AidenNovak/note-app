@@ -14,6 +14,7 @@ from sqlalchemy.orm import selectinload
 from app.config import settings
 from app.database import get_db
 from app.models import (
+    AIStatus,
     File,
     MetadataSource,
     Note,
@@ -128,6 +129,7 @@ async def create_note(
         source_file_id=source_file_id,
         folder_id=folder_id,
         tag_source=tag_source,
+        ai_status=AIStatus.PENDING if (needs_ai_tags and note_content) else AIStatus.IDLE,
         user_id=current_user.id,
     )
     db.add(note)
@@ -183,6 +185,7 @@ async def create_note(
         id=note_id, title=note_title, title_source=title_source.value,
         status=(TaskStatus.PENDING if needs_processing else TaskStatus.COMPLETED).value,
         folder_id=folder_id, tags=note_tags, tag_source=tag_source.value,
+        ai_status=note.ai_status.value,
         source_type=source_type.value if source_type else None,
         attachment_count=len(saved_files),
         content_preview=preview,

@@ -29,6 +29,7 @@ httpx==0.28.1
 
 # AI
 openai>=1.30.0
+networkx>=3.3
 
 # File Handling
 aiofiles==24.1.0

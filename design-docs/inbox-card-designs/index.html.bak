@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Inbox Note Card 设计探索 | atelier</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            display: ['Playfair Display', 'serif'],
+            sans: ['Inter', 'sans-serif'],
+          },
+          colors: {
+            atelier: {
+              cream: '#fafaf5',
+              forest: '#2d5a3d',
+              lime: '#c8e64a',
+              surface: '#f9f9f9',
+              surfaceLow: '#f3f3f3',
+              onSurface: '#1a1c1c',
+              onSurfaceVariant: '#444840',
+              outlineVariant: '#c4c8bd',
+              primaryFixed: '#d3e9c3',
+            }
+          },
+          boxShadow: {
+            'card': '0 2px 24px rgba(26, 28, 28, 0.04)',
+            'card-hover': '0 8px 32px rgba(26, 28, 28, 0.08)',
+            'glass': '0 8px 32px rgba(45, 90, 61, 0.12)',
+            'paper': '0 4px 20px rgba(45, 90, 61, 0.08)',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    .phone-frame {
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.15);
+    }
+    .scrollbar-hide::-webkit-scrollbar {
+      display: none;
+    }
+    .scrollbar-hide {
+      -ms-overflow-style: none;
+      scrollbar-width: none;
+    }
+    @keyframes float {
+      0%, 100% { transform: translateY(0px); }
+      50% { transform: translateY(-6px); }
+    }
+    .animate-float {
+      animation: float 4s ease-in-out infinite;
+    }
+    .animate-float-delayed {
+      animation: float 4s ease-in-out 2s infinite;
+    }
+  </style>
+</head>
+<body class="bg-atelier-cream text-atelier-onSurface font-sans">
+
+  <!-- Header -->
+  <header class="border-b border-atelier-outlineVariant/30 bg-white/80 backdrop-blur-sm sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-6 py-5">
+      <div class="flex items-center justify-between">
+        <div>
+          <h1 class="font-display text-2xl font-bold text-atelier-forest">Inbox Note Card</h1>
+          <p class="text-sm text-atelier-onSurfaceVariant mt-1">设计探索 — 增强显示效果与色彩表达</p>
+        </div>
+        <div class="hidden md:flex items-center gap-3 text-sm text-atelier-onSurfaceVariant">
+          <span class="px-3 py-1.5 rounded-full bg-atelier-primaryFixed text-atelier-forest font-medium">8 种方案</span>
+          <span class="px-3 py-1.5 rounded-full border border-atelier-outlineVariant">Native iOS</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-6 py-10">
+
+    <!-- Intro -->
+    <section class="mb-12">
+      <div class="max-w-3xl">
+        <h2 class="font-display text-xl font-semibold text-atelier-forest mb-3">设计目标</h2>
+        <p class="text-atelier-onSurfaceVariant leading-relaxed">
+          当前的 Inbox 卡片以白色为底、左侧淡绿色装饰条为主，整体较为素雅。为了提升视觉层次感与品牌识别度，
+          我们探索了 <strong>8 种不同的设计方向</strong>，核心围绕两点展开：
+          <span class="text-atelier-forest font-medium">增强显示效果</span> 与
+          <span class="text-atelier-forest font-medium">为卡片注入色彩</span>。
+          每种方案都保留了卡片的信息层级，但在色彩运用、材质感和空间表现上各有侧重。
+        </p>
+      </div>
+    </section>
+
+    <!-- Designs Grid -->
+    <div class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-10">
+
+      <!-- 1. Baseline -->
+      <div class="flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-display text-lg font-bold text-atelier-forest">01. Baseline 现状</h3>
+          <span class="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600">当前版本</span>
+        </div>
+        <div class="phone-frame rounded-[40px] border-[8px] border-white bg-atelier-surface w-full max-w-[320px] mx-auto h-[520px] overflow-hidden relative">
+          <!-- Screen Header -->
+          <div class="px-6 pt-8 pb-3 bg-atelier-surface">
+            <h2 class="font-display text-2xl font-bold text-atelier-onSurface tracking-tight">Collected Fragments</h2>
+            <p class="text-xs text-atelier-onSurfaceVariant/80 mt-1">Your daily thoughts and captures</p>
+          </div>
+          <!-- Cards -->
+          <div class="px-4 space-y-2.5 overflow-y-auto h-full pb-20 scrollbar-hide">
+            <!-- Card 1 -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform">
+              <div class="w-[3px] bg-atelier-primaryFixed rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Morning reflection</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">2h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  The light through the window felt different today. It reminded me of summers...
+                </p>
+                <div class="mt-2 flex items-center gap-2">
+                  <span class="text-xs text-atelier-forest/70">#journal</span>
+                  <span class="text-xs text-atelier-forest/70">#morning</span>
+                </div>
+              </div>
+            </div>
+            <!-- Card 2 -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform">
+              <div class="w-[3px] bg-atelier-primaryFixed rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Book notes: Atomic Habits</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">5h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  Small changes compound over time. Identity-based habits are more sustainable...
+                </p>
+                <div class="mt-2 flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs text-atelier-forest/70">#reading</span>
+                  </div>
+                  <div class="flex items-center gap-0.5 text-atelier-outlineVariant">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    <span class="text-[11px]">2</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- Card 3 -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform opacity-80">
+              <div class="w-[3px] bg-atelier-primaryFixed rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Project ideation</h4>
+                  <div class="flex items-center gap-1 shrink-0">
+                    <div class="w-2 h-2 rounded-full border-2 border-atelier-lime border-t-transparent animate-spin"></div>
+                    <span class="text-[11px] text-atelier-outlineVariant">processing</span>
+                  </div>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  What if the second brain could feel like a garden instead of a filing cabinet?
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 text-sm text-atelier-onSurfaceVariant max-w-[320px] mx-auto">
+          <p><strong>特点：</strong>极简、干净，信息层级清晰。</p>
+          <p class="mt-1 text-atelier-outlineVariant">缺点：所有卡片视觉趋同，缺乏情感温度和快速识别性。</p>
+        </div>
+      </div>
+
+      <!-- 2. Soft Pastel -->
+      <div class="flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-display text-lg font-bold text-atelier-forest">02. Soft Pastel</h3>
+          <span class="text-xs px-2 py-1 rounded bg-rose-50 text-rose-600">情感化</span>
+        </div>
+        <div class="phone-frame rounded-[40px] border-[8px] border-white bg-atelier-surface w-full max-w-[320px] mx-auto h-[520px] overflow-hidden relative">
+          <div class="px-6 pt-8 pb-3 bg-atelier-surface">
+            <h2 class="font-display text-2xl font-bold text-atelier-onSurface tracking-tight">Collected Fragments</h2>
+            <p class="text-xs text-atelier-onSurfaceVariant/80 mt-1">Color by mood</p>
+          </div>
+          <div class="px-4 space-y-2.5 overflow-y-auto h-full pb-20 scrollbar-hide">
+            <!-- Card 1: warm cream -->
+            <div class="bg-[#fdf6e3] rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform border border-[#f0e6cc]">
+              <div class="w-[4px] bg-[#e6c875] rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Morning reflection</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">2h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  The light through the window felt different today. It reminded me of summers...
+                </p>
+                <div class="mt-2 flex items-center gap-2">
+                  <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#8b7355]">#journal</span>
+                  <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#8b7355]">#morning</span>
+                </div>
+              </div>
+            </div>
+            <!-- Card 2: soft blue -->
+            <div class="bg-[#eef4fb] rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform border border-[#d6e3f3]">
+              <div class="w-[4px] bg-[#8ab4e6] rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Book notes: Atomic Habits</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">5h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  Small changes compound over time. Identity-based habits are more sustainable...
+                </p>
+                <div class="mt-2 flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#4a6fa5]">#reading</span>
+                  </div>
+                  <div class="flex items-center gap-0.5 text-atelier-outlineVariant">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    <span class="text-[11px]">2</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- Card 3: soft sage -->
+            <div class="bg-[#f0f5f0] rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform border border-[#d8e5d8]">
+              <div class="w-[4px] bg-[#a3c9a8] rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Project ideation</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">1d ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  What if the second brain could feel like a garden instead of a filing cabinet?
+                </p>
+                <div class="mt-2 flex items-center gap-2">
+                  <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#5a7d5f]">#ideas</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 text-sm text-atelier-onSurfaceVariant max-w-[320px] mx-auto">
+          <p><strong>特点：</strong>卡片背景根据内容情绪赋予低饱和度马卡龙色。</p>
+          <p class="mt-1 text-atelier-outlineVariant">温暖、亲切，适合日记类产品；但颜色过多可能稍显杂乱。</p>
+        </div>
+      </div>
+
+      <!-- 3. Gradient Edge -->
+      <div class="flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-display text-lg font-bold text-atelier-forest">03. Gradient Edge</h3>
+          <span class="text-xs px-2 py-1 rounded bg-gradient-to-r from-atelier-forest to-atelier-lime text-white">现代感</span>
+        </div>
+        <div class="phone-frame rounded-[40px] border-[8px] border-white bg-atelier-surface w-full max-w-[320px] mx-auto h-[520px] overflow-hidden relative">
+          <div class="px-6 pt-8 pb-3 bg-atelier-surface">
+            <h2 class="font-display text-2xl font-bold text-atelier-onSurface tracking-tight">Collected Fragments</h2>
+            <p class="text-xs text-atelier-onSurfaceVariant/80 mt-1">Fluid & dynamic</p>
+          </div>
+          <div class="px-4 space-y-2.5 overflow-y-auto h-full pb-20 scrollbar-hide">
+            <!-- Card 1 -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform">
+              <div class="w-1.5 bg-gradient-to-b from-atelier-forest via-atelier-lime to-atelier-forest/20 rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Morning reflection</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">2h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  The light through the window felt different today. It reminded me of summers...
+                </p>
+                <div class="mt-2 flex items-center gap-2">
+                  <span class="text-xs font-medium text-atelier-forest">#journal</span>
+                  <span class="text-xs font-medium text-atelier-forest">#morning</span>
+                </div>
+              </div>
+            </div>
+            <!-- Card 2 -->
+            <div class="bg-gradient-to-br from-white to-atelier-primaryFixed/30 rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform border border-atelier-primaryFixed/50">
+              <div class="w-1.5 bg-gradient-to-b from-atelier-forest via-atelier-lime to-atelier-forest/20 rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Book notes: Atomic Habits</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">5h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  Small changes compound over time. Identity-based habits are more sustainable...
+                </p>
+                <div class="mt-2 flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs font-medium text-atelier-forest">#reading</span>
+                  </div>
+                  <div class="flex items-center gap-0.5 text-atelier-outlineVariant">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    <span class="text-[11px]">2</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- Card 3 -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform">
+              <div class="w-1.5 bg-gradient-to-b from-atelier-forest via-atelier-lime to-atelier-forest/20 rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Project ideation</h4>
+                  <div class="flex items-center gap-1 shrink-0">
+                    <div class="w-2 h-2 rounded-full border-2 border-atelier-lime border-t-transparent animate-spin"></div>
+                    <span class="text-[11px] text-atelier-outlineVariant">processing</span>
+                  </div>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  What if the second brain could feel like a garden instead of a filing cabinet?
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 text-sm text-atelier-onSurfaceVariant max-w-[320px] mx-auto">
+          <p><strong>特点：</strong>左侧条使用品牌森林绿到黄绿的渐变，部分卡片背景也有微渐变。</p>
+          <p class="mt-1 text-atelier-outlineVariant">极具品牌辨识度，现代感强；渐变实现需注意性能。</p>
+        </div>
+      </div>
+
+      <!-- 4. Glassmorphism -->
+      <div class="flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-display text-lg font-bold text-atelier-forest">04. Glassmorphism</h3>
+          <span class="text-xs px-2 py-1 rounded bg-white/60 text-atelier-forest border border-white/40">前卫</span>
+        </div>
+        <div class="phone-frame rounded-[40px] border-[8px] border-white w-full max-w-[320px] mx-auto h-[520px] overflow-hidden relative"
+             style="background: linear-gradient(160deg, #e8f5e9 0%, #c8e6c9 40%, #a5d6a7 100%);">
+          <div class="px-6 pt-8 pb-3">
+            <h2 class="font-display text-2xl font-bold text-atelier-forest tracking-tight">Collected Fragments</h2>
+            <p class="text-xs text-atelier-forest/70 mt-1">Light & airy</p>
+          </div>
+          <div class="px-4 space-y-3 overflow-y-auto h-full pb-20 scrollbar-hide">
+            <!-- Card 1 -->
+            <div class="bg-white/40 backdrop-blur-md rounded-2xl shadow-glass flex overflow-hidden active:scale-[0.99] transition-transform border border-white/60">
+              <div class="w-1 bg-white/80 rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-forest truncate">Morning reflection</h4>
+                  <span class="text-[11px] text-atelier-forest/60 shrink-0">2h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-forest/80 mt-1.5 leading-[1.45] line-clamp-2">
+                  The light through the window felt different today. It reminded me of summers...
+                </p>
+                <div class="mt-2 flex items-center gap-2">
+                  <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/50 text-atelier-forest border border-white/60">#journal</span>
+                </div>
+              </div>
+            </div>
+            <!-- Card 2 -->
+            <div class="bg-white/40 backdrop-blur-md rounded-2xl shadow-glass flex overflow-hidden active:scale-[0.99] transition-transform border border-white/60">
+              <div class="w-1 bg-white/80 rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-forest truncate">Book notes: Atomic Habits</h4>
+                  <span class="text-[11px] text-atelier-forest/60 shrink-0">5h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-forest/80 mt-1.5 leading-[1.45] line-clamp-2">
+                  Small changes compound over time. Identity-based habits are more sustainable...
+                </p>
+                <div class="mt-2 flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/50 text-atelier-forest border border-white/60">#reading</span>
+                  </div>
+                  <div class="flex items-center gap-0.5 text-atelier-forest/60">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    <span class="text-[11px]">2</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- Card 3 -->
+            <div class="bg-white/40 backdrop-blur-md rounded-2xl shadow-glass flex overflow-hidden active:scale-[0.99] transition-transform border border-white/60">
+              <div class="w-1 bg-white/80 rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-forest truncate">Project ideation</h4>
+                  <span class="text-[11px] text-atelier-forest/60 shrink-0">1d ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-forest/80 mt-1.5 leading-[1.45] line-clamp-2">
+                  What if the second brain could feel like a garden instead of a filing cabinet?
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 text-sm text-atelier-onSurfaceVariant max-w-[320px] mx-auto">
+          <p><strong>特点：</strong>半透明毛玻璃质感，背景色透过卡片若隐若现。</p>
+          <p class="mt-1 text-atelier-outlineVariant">前卫、通透；但在复杂列表中可能降低可读性，RN 实现成本较高。</p>
+        </div>
+      </div>
+
+      <!-- 5. Color Header -->
+      <div class="flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-display text-lg font-bold text-atelier-forest">05. Color Header</h3>
+          <span class="text-xs px-2 py-1 rounded bg-orange-100 text-orange-700">结构性</span>
+        </div>
+        <div class="phone-frame rounded-[40px] border-[8px] border-white bg-atelier-surface w-full max-w-[320px] mx-auto h-[520px] overflow-hidden relative">
+          <div class="px-6 pt-8 pb-3 bg-atelier-surface">
+            <h2 class="font-display text-2xl font-bold text-atelier-onSurface tracking-tight">Collected Fragments</h2>
+            <p class="text-xs text-atelier-onSurfaceVariant/80 mt-1">Categorized at a glance</p>
+          </div>
+          <div class="px-4 space-y-2.5 overflow-y-auto h-full pb-20 scrollbar-hide">
+            <!-- Card 1: journal header -->
+            <div class="bg-white rounded-2xl shadow-card overflow-hidden active:scale-[0.99] transition-transform">
+              <div class="h-5 bg-gradient-to-r from-amber-200 to-orange-200 flex items-center px-3">
+                <span class="text-[10px] font-semibold text-amber-800 uppercase tracking-wider">Journal</span>
+              </div>
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Morning reflection</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">2h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1 leading-[1.45] line-clamp-2">
+                  The light through the window felt different today. It reminded me of summers...
+                </p>
+                <div class="mt-2 flex items-center gap-2">
+                  <span class="text-xs text-atelier-forest/70">#journal</span>
+                  <span class="text-xs text-atelier-forest/70">#morning</span>
+                </div>
+              </div>
+            </div>
+            <!-- Card 2: reading header -->
+            <div class="bg-white rounded-2xl shadow-card overflow-hidden active:scale-[0.99] transition-transform">
+              <div class="h-5 bg-gradient-to-r from-sky-200 to-blue-200 flex items-center px-3">
+                <span class="text-[10px] font-semibold text-sky-800 uppercase tracking-wider">Reading</span>
+              </div>
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Book notes: Atomic Habits</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">5h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1 leading-[1.45] line-clamp-2">
+                  Small changes compound over time. Identity-based habits are more sustainable...
+                </p>
+                <div class="mt-2 flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs text-atelier-forest/70">#reading</span>
+                  </div>
+                  <div class="flex items-center gap-0.5 text-atelier-outlineVariant">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    <span class="text-[11px]">2</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- Card 3: ideas header -->
+            <div class="bg-white rounded-2xl shadow-card overflow-hidden active:scale-[0.99] transition-transform">
+              <div class="h-5 bg-gradient-to-r from-atelier-primaryFixed to-atelier-lime/40 flex items-center px-3">
+                <span class="text-[10px] font-semibold text-atelier-forest uppercase tracking-wider">Ideas</span>
+              </div>
+              <div class="px-4 py-3">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Project ideation</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">1d ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1 leading-[1.45] line-clamp-2">
+                  What if the second brain could feel like a garden instead of a filing cabinet?
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 text-sm text-atelier-onSurfaceVariant max-w-[320px] mx-auto">
+          <p><strong>特点：</strong>卡片顶部有一条彩色分类横幅，颜色与标签对应。</p>
+          <p class="mt-1 text-atelier-outlineVariant">结构清晰，用户可以快速按颜色筛选；但增加了卡片高度。</p>
+        </div>
+      </div>
+
+      <!-- 6. Mood Status -->
+      <div class="flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-display text-lg font-bold text-atelier-forest">06. Mood Status</h3>
+          <span class="text-xs px-2 py-1 rounded bg-purple-100 text-purple-700">状态驱动</span>
+        </div>
+        <div class="phone-frame rounded-[40px] border-[8px] border-white bg-atelier-surface w-full max-w-[320px] mx-auto h-[520px] overflow-hidden relative">
+          <div class="px-6 pt-8 pb-3 bg-atelier-surface">
+            <h2 class="font-display text-2xl font-bold text-atelier-onSurface tracking-tight">Collected Fragments</h2>
+            <p class="text-xs text-atelier-onSurfaceVariant/80 mt-1">Color by state</p>
+          </div>
+          <div class="px-4 space-y-2.5 overflow-y-auto h-full pb-20 scrollbar-hide">
+            <!-- Card 1: Complete (green) -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform border-l-[3px] border-l-atelier-forest">
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <div class="w-5 h-5 rounded-full bg-atelier-primaryFixed flex items-center justify-center">
+                      <svg class="w-3 h-3 text-atelier-forest" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                    </div>
+                    <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Morning reflection</h4>
+                  </div>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">2h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  The light through the window felt different today. It reminded me of summers...
+                </p>
+                <div class="mt-2 flex items-center gap-2">
+                  <span class="text-xs text-atelier-forest/70">#journal</span>
+                </div>
+              </div>
+            </div>
+            <!-- Card 2: Processing (warm yellow) -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform border-l-[3px] border-l-amber-400">
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <div class="w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center">
+                      <div class="w-2.5 h-2.5 rounded-full border-2 border-amber-500 border-t-transparent animate-spin"></div>
+                    </div>
+                    <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Project ideation</h4>
+                  </div>
+                  <span class="text-[11px] text-amber-600 shrink-0">processing</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  What if the second brain could feel like a garden instead of a filing cabinet?
+                </p>
+              </div>
+            </div>
+            <!-- Card 3: Pending (blue) -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform border-l-[3px] border-l-sky-400">
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <div class="flex items-center gap-2">
+                    <div class="w-5 h-5 rounded-full bg-sky-100 flex items-center justify-center">
+                      <div class="w-2 h-2 rounded-full bg-sky-500"></div>
+                    </div>
+                    <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Book notes: Atomic Habits</h4>
+                  </div>
+                  <span class="text-[11px] text-sky-600 shrink-0">pending</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  Small changes compound over time. Identity-based habits are more sustainable...
+                </p>
+                <div class="mt-2 flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="text-xs text-atelier-forest/70">#reading</span>
+                  </div>
+                  <div class="flex items-center gap-0.5 text-atelier-outlineVariant">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    <span class="text-[11px]">2</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 text-sm text-atelier-onSurfaceVariant max-w-[320px] mx-auto">
+          <p><strong>特点：</strong>用颜色直观表达笔记的处理状态：完成=绿、处理中=黄、待处理=蓝。</p>
+          <p class="mt-1 text-atelier-outlineVariant">功能性极强，适合以任务/处理流为核心的 Inbox 场景。</p>
+        </div>
+      </div>
+
+      <!-- 7. Badge Tags -->
+      <div class="flex flex-col">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-display text-lg font-bold text-atelier-forest">07. Badge Tags</h3>
+          <span class="text-xs px-2 py-1 rounded bg-pink-100 text-pink-700">活泼</span>
+        </div>
+        <div class="phone-frame rounded-[40px] border-[8px] border-white bg-atelier-surface w-full max-w-[320px] mx-auto h-[520px] overflow-hidden relative">
+          <div class="px-6 pt-8 pb-3 bg-atelier-surface">
+            <h2 class="font-display text-2xl font-bold text-atelier-onSurface tracking-tight">Collected Fragments</h2>
+            <p class="text-xs text-atelier-onSurfaceVariant/80 mt-1">Vivid & playful</p>
+          </div>
+          <div class="px-4 space-y-2.5 overflow-y-auto h-full pb-20 scrollbar-hide">
+            <!-- Card 1 -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform">
+              <div class="w-[3px] bg-atelier-primaryFixed rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Morning reflection</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">2h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  The light through the window felt different today. It reminded me of summers...
+                </p>
+                <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
+                  <span class="text-[10px] px-2 py-0.5 rounded-md bg-amber-100 text-amber-700 font-medium">journal</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded-md bg-rose-100 text-rose-700 font-medium">morning</span>
+                </div>
+              </div>
+            </div>
+            <!-- Card 2 -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform">
+              <div class="w-[3px] bg-atelier-primaryFixed rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Book notes: Atomic Habits</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">5h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  Small changes compound over time. Identity-based habits are more sustainable...
+                </p>
+                <div class="mt-2.5 flex items-center justify-between">
+                  <div class="flex flex-wrap items-center gap-1.5">
+                    <span class="text-[10px] px-2 py-0.5 rounded-md bg-sky-100 text-sky-700 font-medium">reading</span>
+                    <span class="text-[10px] px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-700 font-medium">productivity</span>
+                  </div>
+                  <div class="flex items-center gap-0.5 text-atelier-outlineVariant">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    <span class="text-[11px]">2</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- Card 3 -->
+            <div class="bg-white rounded-2xl shadow-card flex overflow-hidden active:scale-[0.99] transition-transform">
+              <div class="w-[3px] bg-atelier-primaryFixed rounded-l-2xl"></div>
+              <div class="flex-1 px-4 py-3.5">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-onSurface truncate">Project ideation</h4>
+                  <span class="text-[11px] text-atelier-outlineVariant shrink-0">1d ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  What if the second brain could feel like a garden instead of a filing cabinet?
+                </p>
+                <div class="mt-2.5 flex flex-wrap items-center gap-1.5">
+                  <span class="text-[10px] px-2 py-0.5 rounded-md bg-violet-100 text-violet-700 font-medium">ideas</span>
+                  <span class="text-[10px] px-2 py-0.5 rounded-md bg-atelier-primaryFixed text-atelier-forest font-medium">design</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 text-sm text-atelier-onSurfaceVariant max-w-[320px] mx-auto">
+          <p><strong>特点：</strong>标签升级为彩色小徽章，卡片本身保持白色，但底部变得活泼。</p>
+          <p class="mt-1 text-atelier-outlineVariant">改动最小但视觉提升明显；需注意标签过多时的拥挤问题。</p>
+        </div>
+      </div>
+
+      <!-- 8. Nature Organic -->
+      <div class="flex flex-col md:col-span-2 xl:col-span-1">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-display text-lg font-bold text-atelier-forest">08. Nature Organic</h3>
+          <span class="text-xs px-2 py-1 rounded bg-atelier-primaryFixed text-atelier-forest">品牌向</span>
+        </div>
+        <div class="phone-frame rounded-[40px] border-[8px] border-white w-full max-w-[320px] mx-auto h-[520px] overflow-hidden relative"
+             style="background: linear-gradient(180deg, #fafaf5 0%, #f5f7f0 100%);">
+          <div class="px-6 pt-8 pb-3">
+            <h2 class="font-display text-2xl font-bold text-atelier-forest tracking-tight">Collected Fragments</h2>
+            <p class="text-xs text-atelier-forest/70 mt-1">Like leaves on a table</p>
+          </div>
+          <div class="px-4 space-y-3 overflow-y-auto h-full pb-20 scrollbar-hide">
+            <!-- Card 1 -->
+            <div class="bg-[#fefffb] rounded-[22px] shadow-paper flex overflow-hidden active:scale-[0.99] transition-transform rotate-[-0.5deg] border border-atelier-primaryFixed/60">
+              <div class="w-2 bg-atelier-forest rounded-l-[22px]"></div>
+              <div class="flex-1 px-4 py-4">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-forest truncate">Morning reflection</h4>
+                  <span class="text-[11px] text-atelier-forest/50 shrink-0">2h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  The light through the window felt different today. It reminded me of summers...
+                </p>
+                <div class="mt-2.5 flex items-center gap-2">
+                  <span class="text-[11px] text-atelier-forest/80 font-medium">#journal</span>
+                  <span class="text-[11px] text-atelier-forest/80 font-medium">#morning</span>
+                </div>
+              </div>
+            </div>
+            <!-- Card 2 -->
+            <div class="bg-[#fefffb] rounded-[22px] shadow-paper flex overflow-hidden active:scale-[0.99] transition-transform rotate-[0.3deg] border border-atelier-primaryFixed/60">
+              <div class="w-2 bg-atelier-lime rounded-l-[22px]"></div>
+              <div class="flex-1 px-4 py-4">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-forest truncate">Book notes: Atomic Habits</h4>
+                  <span class="text-[11px] text-atelier-forest/50 shrink-0">5h ago</span>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  Small changes compound over time. Identity-based habits are more sustainable...
+                </p>
+                <div class="mt-2.5 flex items-center justify-between">
+                  <div class="flex items-center gap-2">
+                    <span class="text-[11px] text-atelier-forest/80 font-medium">#reading</span>
+                  </div>
+                  <div class="flex items-center gap-0.5 text-atelier-forest/50">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                    <span class="text-[11px]">2</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <!-- Card 3 -->
+            <div class="bg-[#fefffb] rounded-[22px] shadow-paper flex overflow-hidden active:scale-[0.99] transition-transform rotate-[-0.3deg] border border-atelier-primaryFixed/60">
+              <div class="w-2 bg-atelier-forest rounded-l-[22px]"></div>
+              <div class="flex-1 px-4 py-4">
+                <div class="flex items-center justify-between gap-2">
+                  <h4 class="text-sm font-semibold text-atelier-forest truncate">Project ideation</h4>
+                  <div class="flex items-center gap-1 shrink-0">
+                    <div class="w-2 h-2 rounded-full border-2 border-atelier-lime border-t-transparent animate-spin"></div>
+                    <span class="text-[11px] text-atelier-forest/50">processing</span>
+                  </div>
+                </div>
+                <p class="text-[13px] text-atelier-onSurfaceVariant mt-1.5 leading-[1.45] line-clamp-2">
+                  What if the second brain could feel like a garden instead of a filing cabinet?
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="mt-4 text-sm text-atelier-onSurfaceVariant max-w-[320px] mx-auto">
+          <p><strong>特点：</strong>奶油色底、更大的圆角、柔和的纸张阴影，卡片微带旋转。</p>
+          <p class="mt-1 text-atelier-outlineVariant">完美契合 atelier 品牌调性；但微旋转在 RN 列表中需精细处理。</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Comparison Table -->
+    <section class="mt-16">
+      <h2 class="font-display text-xl font-semibold text-atelier-forest mb-6">方案对比速览</h2>
+      <div class="overflow-x-auto rounded-2xl border border-atelier-outlineVariant/30 bg-white">
+        <table class="min-w-full text-sm">
+          <thead class="bg-atelier-surface text-atelier-onSurfaceVariant uppercase text-xs tracking-wider">
+            <tr>
+              <th class="text-left px-5 py-3 font-semibold">方案</th>
+              <th class="text-left px-5 py-3 font-semibold">色彩策略</th>
+              <th class="text-left px-5 py-3 font-semibold">视觉强度</th>
+              <th class="text-left px-5 py-3 font-semibold">RN 实现难度</th>
+              <th class="text-left px-5 py-3 font-semibold">推荐场景</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-atelier-outlineVariant/20 text-atelier-onSurface">
+            <tr>
+              <td class="px-5 py-3.5 font-medium">01. Baseline</td>
+              <td class="px-5 py-3.5">单一淡绿条</td>
+              <td class="px-5 py-3.5">★☆☆☆☆</td>
+              <td class="px-5 py-3.5">极易</td>
+              <td class="px-5 py-3.5">极简主义优先</td>
+            </tr>
+            <tr>
+              <td class="px-5 py-3.5 font-medium">02. Soft Pastel</td>
+              <td class="px-5 py-3.5">卡片整体马卡龙色</td>
+              <td class="px-5 py-3.5">★★★☆☆</td>
+              <td class="px-5 py-3.5">容易</td>
+              <td class="px-5 py-3.5">情感化、日记类产品</td>
+            </tr>
+            <tr>
+              <td class="px-5 py-3.5 font-medium">03. Gradient Edge</td>
+              <td class="px-5 py-3.5">品牌绿渐变条+微渐变背景</td>
+              <td class="px-5 py-3.5">★★★★☆</td>
+              <td class="px-5 py-3.5">中等</td>
+              <td class="px-5 py-3.5">强化品牌识别</td>
+            </tr>
+            <tr>
+              <td class="px-5 py-3.5 font-medium">04. Glassmorphism</td>
+              <td class="px-5 py-3.5">半透明+背景透色</td>
+              <td class="px-5 py-3.5">★★★★☆</td>
+              <td class="px-5 py-3.5">较难</td>
+              <td class="px-5 py-3.5">追求前沿视觉体验</td>
+            </tr>
+            <tr>
+              <td class="px-5 py-3.5 font-medium">05. Color Header</td>
+              <td class="px-5 py-3.5">顶部彩色分类横幅</td>
+              <td class="px-5 py-3.5">★★★☆☆</td>
+              <td class="px-5 py-3.5">容易</td>
+              <td class="px-5 py-3.5">分类多、需快速识别</td>
+            </tr>
+            <tr>
+              <td class="px-5 py-3.5 font-medium">06. Mood Status</td>
+              <td class="px-5 py-3.5">状态图标+边框颜色</td>
+              <td class="px-5 py-3.5">★★★☆☆</td>
+              <td class="px-5 py-3.5">容易</td>
+              <td class="px-5 py-3.5">任务流、处理状态重要</td>
+            </tr>
+            <tr>
+              <td class="px-5 py-3.5 font-medium">07. Badge Tags</td>
+              <td class="px-5 py-3.5">标签彩色徽章</td>
+              <td class="px-5 py-3.5">★★☆☆☆</td>
+              <td class="px-5 py-3.5">极易</td>
+              <td class="px-5 py-3.5">最小改动、最大效果</td>
+            </tr>
+            <tr class="bg-atelier-primaryFixed/20">
+              <td class="px-5 py-3.5 font-bold text-atelier-forest">08. Nature Organic</td>
+              <td class="px-5 py-3.5 font-medium text-atelier-forest">奶油纸感+品牌绿/黄绿条</td>
+              <td class="px-5 py-3.5 font-medium text-atelier-forest">★★★☆☆</td>
+              <td class="px-5 py-3.5 font-medium text-atelier-forest">中等</td>
+              <td class="px-5 py-3.5 font-medium text-atelier-forest">★ 最契合 atelier 品牌</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Recommendation -->
+    <section class="mt-12 mb-20">
+      <div class="rounded-3xl bg-gradient-to-br from-atelier-forest to-[#1a3d2a] p-8 md:p-10 text-white relative overflow-hidden">
+        <div class="absolute top-0 right-0 w-64 h-64 bg-atelier-lime/10 rounded-full blur-3xl -translate-y-1/2 translate-x-1/3"></div>
+        <div class="relative z-10">
+          <h2 class="font-display text-2xl font-bold mb-4">设计建议</h2>
+          <div class="space-y-3 text-atelier-cream/90 leading-relaxed max-w-3xl">
+            <p>
+              如果希望 <strong>最小风险、最大提升</strong>，推荐从 <span class="text-atelier-lime font-semibold">07. Badge Tags</span> 入手：
+              仅将标签从纯文本改为彩色小徽章，即可在不破坏现有信息层级的前提下显著增加活力。
+            </p>
+            <p>
+              如果希望 <strong>深度契合 atelier "Second Digital Mind" 的品牌叙事</strong>，
+              我们更推荐 <span class="text-atelier-lime font-semibold">08. Nature Organic</span>：
+              它通过奶油色纸张质感、更大的圆角和森林绿/黄绿的色彩点缀，让 Inbox 像一本摊开的笔记本，
+              每一次滑动都像在翻阅思绪的叶子。
+            </p>
+            <p>
+              另外，<span class="text-atelier-lime font-semibold">03. Gradient Edge</span> 是品牌色运用的现代诠释，
+              适合在保持专业感的同时注入更多视觉能量。
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+</body>
+</html>

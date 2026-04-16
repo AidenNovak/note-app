@@ -144,6 +144,20 @@ class TestCreateNote:
         assert versions[0].summary == "Initial capture"
 
 
+class TestUploadNote:
+    async def test_upload_text_content_sets_ai_status_pending(self, client: AsyncClient, auth_headers, mocker):
+        mocker.patch("api.v1.notes._background_ai_tag")
+        resp = await client.post(
+            "/api/v1/notes/upload",
+            data={"title": "Quick capture", "content": "A fresh note that still needs AI tags."},
+            headers=auth_headers,
+        )
+        assert resp.status_code == 201
+        data = resp.json()
+        assert data["status"] == "completed"
+        assert data["ai_status"] == AIStatus.PENDING.value
+
+
 # ── Read ──────────────────────────────────────────────
 
 class TestGetNote:

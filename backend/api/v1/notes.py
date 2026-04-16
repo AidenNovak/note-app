@@ -11,7 +11,26 @@ from sqlalchemy.orm import selectinload
 from app.auth.utils import get_current_user
 from app.config import settings
 from app.database import get_db, async_session
-from app.models import AIStatus, Folder, MindConnection, Note, NoteEmbedding, NoteTag, NoteSimilarity, NoteVersion, TaskStatus, User, VersionOrigin
+from app.models import (
+    AIStatus,
+    File,
+    Folder,
+    GroundPost,
+    GroundPostLike,
+    InsightEvidenceItem,
+    MindConnection,
+    Note,
+    NoteEmbedding,
+    NoteLike,
+    NoteTag,
+    NoteSimilarity,
+    NoteVersion,
+    ProcessingTask,
+    SharedNote,
+    TaskStatus,
+    User,
+    VersionOrigin,
+)
 from app.note_collaboration import dumps_tags, normalize_tags, resolve_note_metadata
 from app.schemas import NoteCreate, NoteDetail, NoteListResponse, NoteOut, NoteUpdate
 from app.storage import categorize_mime_type
@@ -431,6 +450,7 @@ async def update_note(
             fallback_tag_source=note.tag_source,
             db=db,
             user_id=current_user.id,
+            skip_ai=True,
         )
 
         previous_version = note.current_version
@@ -457,6 +477,13 @@ async def update_note(
             )
         )
 
+        # Async AI tagging after save
+        if resolved.needs_ai_tagging and resolved.markdown_content:
+            background_tasks.add_task(
+                _background_ai_tag, note.id, resolved.markdown_content,
+                resolved.title, current_user.id,
+            )
+
     await db.commit()
     refreshed = await db.execute(
         select(Note)
@@ -480,30 +507,76 @@ async def delete_note(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    result = await db.execute(select(Note).where(Note.id == note_id, Note.user_id == current_user.id))
-    note = result.scalar_one_or_none()
-    if not note:
+    result = await db.execute(
+        select(Note.id).where(Note.id == note_id, Note.user_id == current_user.id)
+    )
+    if not result.scalar_one_or_none():
         raise HTTPException(
             status_code=404,
             detail={"error": {"code": "NOTE_NOT_FOUND", "message": "Note not found"}},
         )
 
-    # Clean up related records that lack ORM cascade relationships
+    # Bulk-delete all related records to avoid ORM-level N+1 cascade loading.
+    # Tables without DB-level ON DELETE CASCADE are handled explicitly.
+    await db.execute(NoteTag.__table__.delete().where(NoteTag.__table__.c.note_id == note_id))
+    await db.execute(NoteVersion.__table__.delete().where(NoteVersion.__table__.c.note_id == note_id))
+    await db.execute(ProcessingTask.__table__.delete().where(ProcessingTask.__table__.c.note_id == note_id))
+    await db.execute(File.__table__.delete().where(File.__table__.c.note_id == note_id))
     await db.execute(
         NoteEmbedding.__table__.delete().where(NoteEmbedding.__table__.c.note_id == note_id)
     )
     await db.execute(
         NoteSimilarity.__table__.delete().where(
-            or_(NoteSimilarity.__table__.c.note_id == note_id,
-                NoteSimilarity.__table__.c.similar_note_id == note_id)
+            or_(
+                NoteSimilarity.__table__.c.note_id == note_id,
+                NoteSimilarity.__table__.c.similar_note_id == note_id,
+            )
         )
     )
     await db.execute(
         MindConnection.__table__.delete().where(
-            or_(MindConnection.__table__.c.note_a_id == note_id,
-                MindConnection.__table__.c.note_b_id == note_id)
+            or_(
+                MindConnection.__table__.c.note_a_id == note_id,
+                MindConnection.__table__.c.note_b_id == note_id,
+            )
+        )
+    )
+    await db.execute(
+        InsightEvidenceItem.__table__.delete().where(
+            InsightEvidenceItem.__table__.c.note_id == note_id
         )
     )
 
-    await db.delete(note)
+    # shared_notes -> note_likes (no DB cascade)
+    await db.execute(
+        NoteLike.__table__.delete().where(
+            NoteLike.__table__.c.shared_note_id.in_(
+                select(SharedNote.__table__.c.id).where(SharedNote.__table__.c.note_id == note_id)
+            )
+        )
+    )
+    await db.execute(SharedNote.__table__.delete().where(SharedNote.__table__.c.note_id == note_id))
+
+    # ground_posts -> ground_post_likes (no DB cascade)
+    await db.execute(
+        GroundPostLike.__table__.delete().where(
+            GroundPostLike.__table__.c.post_id.in_(
+                select(GroundPost.__table__.c.id).where(
+                    GroundPost.__table__.c.ref_id == note_id,
+                    GroundPost.__table__.c.post_type == "note",
+                )
+            )
+        )
+    )
+    await db.execute(
+        GroundPost.__table__.delete().where(
+            GroundPost.__table__.c.ref_id == note_id,
+            GroundPost.__table__.c.post_type == "note",
+        )
+    )
+
+    # Finally delete the note itself in a single statement
+    await db.execute(
+        Note.__table__.delete().where(Note.id == note_id, Note.user_id == current_user.id)
+    )
     await db.commit()

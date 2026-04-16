@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Type, TypeVar
+from dataclasses import dataclass
+from typing import Any, Type, TypeVar
 
 try:
     from ai_sdk import generate_text, stream_text
@@ -15,6 +16,8 @@ try:
     from ai_sdk.providers.openai import OpenAIModel
     _HAS_AI_SDK = True
 except ImportError:
+    LanguageModel = Any
+    OpenAIModel = None
     _HAS_AI_SDK = False
 import openai as _openai_lib
 from pydantic import BaseModel
@@ -31,6 +34,13 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T", bound=BaseModel)
 
 
+@dataclass
+class GeneratedTextResult:
+    text: str
+    finish_reason: str | None = None
+    usage: Any = None
+
+
 # ── Provider / Model Factory ───────────────────────────
 
 
@@ -44,6 +54,12 @@ def get_model(
     """
     model_name = model_name or settings.AI_MODEL
     api_key = settings.OPENROUTER_API_KEY
+
+    if not _HAS_AI_SDK:
+        return _openai_lib.OpenAI(
+            api_key=api_key,
+            base_url=settings.OPENROUTER_BASE_URL,
+        )
 
     model = OpenAIModel(model_name, api_key=api_key)
     model._client = _openai_lib.OpenAI(
@@ -124,6 +140,76 @@ def _parse_to_model(text: str, model_class: Type[T]) -> T:
         return model_class.model_validate(data)
 
 
+def _extract_message_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def _generate_text_sync(
+    *,
+    model: LanguageModel,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+) -> GeneratedTextResult:
+    if _HAS_AI_SDK:
+        result = generate_text(
+            model=model,
+            system=system,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return GeneratedTextResult(
+            text=result.text or "",
+            finish_reason=getattr(result, "finish_reason", None),
+            usage=getattr(result, "usage", None),
+        )
+
+    response = model.chat.completions.create(
+        model=settings.AI_MODEL,
+        messages=[
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    choice = response.choices[0] if response.choices else None
+    text = _extract_message_text(choice.message.content) if choice and getattr(choice, "message", None) else ""
+    usage = getattr(response, "usage", None)
+    finish_reason = getattr(choice, "finish_reason", None) if choice else None
+    return GeneratedTextResult(text=text, finish_reason=finish_reason, usage=usage)
+
+
+async def _generate_text_result(
+    *,
+    model: LanguageModel,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+) -> GeneratedTextResult:
+    return await asyncio.to_thread(
+        _generate_text_sync,
+        model=model,
+        system=system,
+        prompt=prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+
+
 # ── Convenience Wrappers ───────────────────────────────
 
 
@@ -141,8 +227,7 @@ async def generate_report(
     generate_text is synchronous, so we run it in a thread to avoid blocking the event loop.
     """
     model = model or get_model()
-    result = await asyncio.to_thread(
-        generate_text,
+    result = await _generate_text_result(
         model=model,
         system=system,
         prompt=user_prompt,
@@ -169,8 +254,7 @@ async def generate_groups(
     generate_text is synchronous, so we run it in a thread to avoid blocking the event loop.
     """
     model = model or get_agent_model()
-    result = await asyncio.to_thread(
-        generate_text,
+    result = await _generate_text_result(
         model=model,
         system=system,
         prompt=user_prompt,
@@ -216,19 +300,47 @@ async def stream_and_broadcast(
     model = model or get_agent_model()
     collected = ""
 
-    result = stream_text(
-        model=model,
-        system=system,
-        prompt=user_prompt,
-    )
+    if _HAS_AI_SDK:
+        result = stream_text(
+            model=model,
+            system=system,
+            prompt=user_prompt,
+        )
 
-    async for chunk in result.text_stream:
-        collected += chunk
-        await broadcast_log(generation_id, {
-            "type": "token",
-            "token": chunk,
-            "prefix": stream_prefix,
-        })
+        async for chunk in result.text_stream:
+            collected += chunk
+            await broadcast_log(generation_id, {
+                "type": "token",
+                "token": chunk,
+                "prefix": stream_prefix,
+            })
+    else:
+        def _sync_stream() -> list[str]:
+            tokens: list[str] = []
+            stream = model.chat.completions.create(
+                model=settings.AI_MODEL,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_prompt},
+                ],
+                max_tokens=settings.AI_MAX_TOKENS,
+                temperature=settings.AI_TEMPERATURE,
+                stream=True,
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta if chunk.choices else None
+                token = delta.content if delta and delta.content else ""
+                if token:
+                    tokens.append(token)
+            return tokens
+
+        for token in await asyncio.to_thread(_sync_stream):
+            collected += token
+            await broadcast_log(generation_id, {
+                "type": "token",
+                "token": token,
+                "prefix": stream_prefix,
+            })
 
     return collected
 
@@ -253,6 +365,8 @@ async def stream_messages_and_broadcast(
 
     # Use the underlying OpenAI client directly for message-based streaming
     client = getattr(model, "_client", None)
+    if client is None and hasattr(model, "chat"):
+        client = model
     if client is None:
         raise RuntimeError("Model does not expose an OpenAI client; cannot stream messages")
 
@@ -335,8 +449,7 @@ async def discover_angles(
     model = model or get_model()
     system = ANGLE_DISCOVERY_SYSTEM.format(num_angles=num_angles)
 
-    result = await asyncio.to_thread(
-        generate_text,
+    result = await _generate_text_result(
         model=model,
         system=system,
         prompt=cluster_summaries,
@@ -454,8 +567,7 @@ async def generate_report_for_angle(
         "message": f"s{group_index} 正在生成报告: {angle_name}...",
     })
 
-    result = await asyncio.to_thread(
-        generate_text,
+    result = await _generate_text_result(
         model=model,
         system=system,
         prompt=notes_content,
