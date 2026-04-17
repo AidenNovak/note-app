@@ -15,10 +15,21 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.config import settings
 
+
+def _rate_limit_key(request: Request) -> str:
+    """Prefer token_id > IP so that PATs get their own bucket and can't be
+    starved by an attacker sharing their egress IP."""
+    state = getattr(request, "state", None)
+    token_id = getattr(state, "api_token_id", None) if state else None
+    if token_id:
+        return f"tok:{token_id}"
+    return get_remote_address(request)
+
+
 # Configure rate limiter — uses RATE_LIMIT_STORAGE_URI from settings.
 # Default "memory://" works for single-instance; set to "redis://..." for multi-worker.
 limiter = Limiter(
-    key_func=get_remote_address,
+    key_func=_rate_limit_key,
     default_limits=["100/minute"],
     storage_uri=settings.RATE_LIMIT_STORAGE_URI,
 )

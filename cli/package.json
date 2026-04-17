@@ -1,0 +1,45 @@
+{
+  "name": "@jilly/atelier-cli",
+  "version": "0.1.0",
+  "description": "Command-line interface for atélier — Your Second Digital Mind.",
+  "keywords": ["atelier", "jilly", "notes", "cli", "ai-native", "second-brain"],
+  "homepage": "https://jilly.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jilly-app/note-app.git",
+    "directory": "cli"
+  },
+  "bugs": "https://github.com/jilly-app/note-app/issues",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "atelier": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod +x dist/index.js",
+    "dev": "tsx src/index.ts",
+    "prepublishOnly": "pnpm run build",
+    "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "picocolors": "^1.0.1",
+    "prompts": "^2.4.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.5",
+    "@types/prompts": "^2.4.9",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.3"
+  }
+}

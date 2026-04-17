@@ -7,6 +7,7 @@ Native-first note app: Expo iOS client + FastAPI backend.
 ```text
 note-app/
 ├── backend/          FastAPI backend (Railway: backend.jilly.app)
+├── cli/              `atelier` command-line client (TypeScript)
 ├── easystarter/      Native workspace (separate git repo)
 │   ├── apps/native/  Expo 55 + React Native 0.83 app
 │   └── packages/     Shared packages used by native
@@ -52,6 +53,16 @@ make native-dev
 make install
 make dev
 ```
+
+### 4. CLI (optional, AI-native scripting)
+
+```bash
+npm install -g @jilly/atelier-cli
+atelier auth login --email you@example.com
+atelier note add "hello from the terminal"
+```
+
+See [`cli/README.md`](cli/README.md) for full usage.
 
 ## Environment variables
 

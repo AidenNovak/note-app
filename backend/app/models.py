@@ -424,6 +424,27 @@ class UserSession(Base):
     user: Mapped["User"] = relationship(back_populates="sessions")
 
 
+class ApiToken(Base):
+    """Personal Access Token (PAT) for CLI / automation usage.
+
+    Tokens are returned to the user in plaintext exactly once at creation time
+    (prefix `atl_` + base32 random). Only the sha256 hash is stored.
+    """
+    __tablename__ = "api_tokens"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    # First 12 chars of the plaintext token (e.g. "atl_ab12cd34") — safe to display in UI.
+    token_prefix: Mapped[str] = mapped_column(String(16), index=True)
+    token_hash: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    # Space-separated subset of: read, write, admin
+    scopes: Mapped[str] = mapped_column(String(128), default="read")
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class EmailVerification(Base):
     """Token for email verification and password reset flows."""
     __tablename__ = "email_verifications"
