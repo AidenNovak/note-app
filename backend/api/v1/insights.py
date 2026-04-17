@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -172,13 +173,12 @@ async def _background_generate_clustered(generation_id: str) -> None:
             from app.notifications.triggers import notify_insight_ready
 
             await run_clustered_pipeline(db, generation)
-            # Notify user that insight is ready (use a fresh session in case the
-            # original connection was dropped during the long LLM phase)
+            # Notify user that insight is ready
             async with async_session() as notify_db:
                 notify_gen = await notify_db.get(InsightGeneration, generation_id)
                 if notify_gen is not None:
                     await notify_insight_ready(
-                        notify_db, user_id, generation_id,
+                        user_id, generation_id,
                         notify_gen.summary or "你的洞察分析已完成",
                     )
         except Exception as exc:

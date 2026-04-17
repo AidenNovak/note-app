@@ -603,6 +603,32 @@ class PostLikeResponse(BaseModel):
     liked: bool
 
 
+class ReportReason(str):
+    """Allowed values documented via pydantic regex; see ground.moderation.REPORT_REASONS."""
+
+
+class ReportPostRequest(BaseModel):
+    reason: str = Field(
+        pattern="^(spam|harassment|nsfw|violence|hate|self_harm|illegal|impersonation|other)$",
+    )
+    details: str | None = Field(default=None, max_length=2000)
+
+
+class ReportPostResponse(BaseModel):
+    post_id: str
+    reported: bool
+
+
+class BlockUserResponse(BaseModel):
+    user_id: str
+    blocked: bool
+
+
+class HidePostResponse(BaseModel):
+    post_id: str
+    hidden: bool
+
+
 class ExploreResponse(BaseModel):
     trending: list = Field(default_factory=list)
     recommended: list = Field(default_factory=list)

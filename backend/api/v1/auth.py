@@ -459,11 +459,17 @@ async def delete_account(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Soft-delete the user account."""
+    """Soft-delete the user account.
+
+    The account enters a 30-day retention window, after which a background
+    sweeper (`app.tasks.hard_delete`) performs a hard delete of all personal
+    data: notes, embeddings, ground posts, likes, reports, blocks, OAuth
+    identities, and any R2/blob attachments.
+    """
     current_user.deleted_at = datetime.now(timezone.utc)
     current_user.is_active = False
     await db.commit()
-    return {"status": "deleted"}
+    return {"status": "deleted", "purge_after_days": 30}
 
 
 # ── Shared OAuth helper ──────────────────────────────────

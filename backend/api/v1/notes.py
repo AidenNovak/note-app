@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import uuid
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
@@ -140,28 +141,49 @@ def _tag_values(note: Note) -> list[str]:
     return sorted(tag.tag for tag in note.tags)
 
 
+_MD_IMAGE_RE = re.compile(r"!\[[^\]]*\]\([^)]*\)")
+_MD_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_CODE_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
+_ROLE_MARKER_RE = re.compile(r"role::\w+")
+_KIMI_MARKER_RE = re.compile(r"\(kimi[^)]*\)", re.IGNORECASE)
+_BLOCK_FENCE_RE = re.compile(r"=begin-[\w-]+|=end-[\w-]+")
+_INLINE_CODE_RE = re.compile(r"`([^`]+)`")
+_BOLD_EM_RE = re.compile(r"\*\*|__")
+_LIST_PREFIX_RE = re.compile(r"^[-*>]\s+", re.MULTILINE)
+_HEADING_PREFIX_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
 def _content_preview(content: str | None, max_len: int = 150) -> str:
-    """Extract first ~150 chars of markdown content, stripping headers/formatting."""
+    """Produce a clean, single-line preview from markdown content.
+
+    Strips HTML tags and comments, markdown syntax (headings, bold, code fences,
+    inline code, images, links, block fences), and internal LLM role/kimi markers,
+    then collapses whitespace. The native client renders this as-is.
+    """
     if not content:
         return ""
-    lines = []
-    for line in content.split("\n"):
-        stripped = line.strip()
-        if not stripped:
-            continue
-        # Skip markdown headings
-        if stripped.startswith("#"):
-            stripped = stripped.lstrip("# ").strip()
-        # Skip horizontal rules
-        if stripped in ("---", "***", "___"):
-            continue
-        lines.append(stripped)
-        if sum(len(l) for l in lines) >= max_len:
-            break
-    preview = " ".join(lines)
-    if len(preview) > max_len:
-        preview = preview[:max_len].rstrip() + "…"
-    return preview
+    text = content
+    text = _HTML_COMMENT_RE.sub("", text)
+    text = _CODE_FENCE_RE.sub("", text)
+    text = _MD_IMAGE_RE.sub("", text)
+    text = _MD_LINK_RE.sub(r"\1", text)
+    text = _HTML_TAG_RE.sub("", text)
+    text = _ROLE_MARKER_RE.sub("", text)
+    text = _KIMI_MARKER_RE.sub("", text)
+    text = _BLOCK_FENCE_RE.sub("", text)
+    text = _INLINE_CODE_RE.sub(r"\1", text)
+    text = _BOLD_EM_RE.sub("", text)
+    text = _HEADING_PREFIX_RE.sub("", text)
+    text = _LIST_PREFIX_RE.sub("", text)
+    text = _WHITESPACE_RE.sub(" ", text).strip()
+    # Skip horizontal-rule-only artifacts
+    text = text.replace("---", "").replace("***", "").replace("___", "").strip()
+    if len(text) > max_len:
+        text = text[:max_len].rstrip() + "…"
+    return text
 
 
 def _build_note_out(note: Note) -> NoteOut:

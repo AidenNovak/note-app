@@ -61,8 +61,9 @@ async def add_tags(
     except IntegrityError:
         await db.rollback()
 
-    tags_result = await db.execute(select(NoteTag.tag).where(NoteTag.note_id == note_id))
-    return {"tags": [r[0] for r in tags_result.all()]}
+    # Merge in-memory: existing (full set) ∪ newly inserted
+    all_existing = await db.execute(select(NoteTag.tag).where(NoteTag.note_id == note_id))
+    return {"tags": sorted(r[0] for r in all_existing.all())}
 
 
 @router.delete("/notes/{note_id}/tags/{tag}", status_code=status.HTTP_204_NO_CONTENT)

@@ -350,10 +350,18 @@ class TestSendNotification:
 
 class TestTriggers:
     @pytest.mark.asyncio
-    async def test_trigger_rate_limited(self, db, test_user):
+    async def test_trigger_rate_limited(self, db, test_user, monkeypatch):
         """Second notification within 60s should be skipped."""
+        from contextlib import asynccontextmanager
         from app.notifications.service import register_device
+        from app.notifications import triggers as triggers_mod
         from app.notifications.triggers import notify_post_liked
+
+        @asynccontextmanager
+        async def _fake_session():
+            yield db
+
+        monkeypatch.setattr(triggers_mod, "async_session", _fake_session)
 
         await register_device(db, test_user.id, "ExponentPushToken[trig1]", "ios")
 
@@ -361,24 +369,32 @@ class TestTriggers:
             mock_push.return_value = [{"status": "ok", "id": "t1"}]
 
             # First call — should send
-            await notify_post_liked(db, test_user.id, "Alice", "My post")
+            await notify_post_liked(test_user.id, "Alice", "My post")
             assert mock_push.call_count == 1
 
             # Second call — rate limited
-            await notify_post_liked(db, test_user.id, "Bob", "My post")
+            await notify_post_liked(test_user.id, "Bob", "My post")
             assert mock_push.call_count == 1  # still 1
 
     @pytest.mark.asyncio
-    async def test_different_types_not_rate_limited(self, db, test_user):
+    async def test_different_types_not_rate_limited(self, db, test_user, monkeypatch):
         """Different notification types should not rate limit each other."""
+        from contextlib import asynccontextmanager
         from app.notifications.service import register_device
+        from app.notifications import triggers as triggers_mod
         from app.notifications.triggers import notify_post_liked, notify_insight_ready
+
+        @asynccontextmanager
+        async def _fake_session():
+            yield db
+
+        monkeypatch.setattr(triggers_mod, "async_session", _fake_session)
 
         await register_device(db, test_user.id, "ExponentPushToken[trig2]", "ios")
 
         with patch("app.notifications.service.send_push", new_callable=AsyncMock) as mock_push:
             mock_push.return_value = [{"status": "ok", "id": "t1"}]
 
-            await notify_post_liked(db, test_user.id, "Alice", "Post")
-            await notify_insight_ready(db, test_user.id, "ins-1", "Report")
+            await notify_post_liked(test_user.id, "Alice", "Post")
+            await notify_insight_ready(test_user.id, "ins-1", "Report")
             assert mock_push.call_count == 2

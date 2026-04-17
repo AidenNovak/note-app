@@ -90,7 +90,7 @@ class Folder(Base):
     __tablename__ = "folders"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
-    parent_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("folders.id"), nullable=True)
+    parent_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("folders.id"), nullable=True, index=True)
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -107,7 +107,7 @@ class Note(Base):
     status: Mapped[TaskStatus] = mapped_column(Enum(TaskStatus), default=TaskStatus.PENDING)
     source_type: Mapped[Optional[SourceType]] = mapped_column(Enum(SourceType), nullable=True)
     source_file_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("files.id"), nullable=True)
-    folder_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("folders.id"), nullable=True)
+    folder_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("folders.id"), nullable=True, index=True)
     title_source: Mapped[MetadataSource] = mapped_column(Enum(MetadataSource), default=MetadataSource.SYSTEM)
     tag_source: Mapped[MetadataSource] = mapped_column(Enum(MetadataSource), default=MetadataSource.NONE)
     ai_status: Mapped[AIStatus] = mapped_column(Enum(AIStatus), default=AIStatus.IDLE)
@@ -299,6 +299,9 @@ class GroundPost(Base):
     title: Mapped[str] = mapped_column(String(255))
     preview: Mapped[str] = mapped_column(Text, default="")
     extra_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # graph snapshot, etc.
+    is_hidden: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False, index=True)
+    hidden_reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    hidden_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     user: Mapped["User"] = relationship()
     post_likes: Mapped[List["GroundPostLike"]] = relationship(back_populates="post", cascade="all, delete-orphan")
@@ -312,6 +315,41 @@ class GroundPostLike(Base):
     user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     post: Mapped["GroundPost"] = relationship(back_populates="post_likes")
+
+
+class PostReport(Base):
+    """A user's report of a ground post for moderation review."""
+    __tablename__ = "ground_post_reports"
+    __table_args__ = (UniqueConstraint("post_id", "reporter_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    post_id: Mapped[str] = mapped_column(String(36), ForeignKey("ground_posts.id", ondelete="CASCADE"), index=True)
+    reporter_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    reason: Mapped[str] = mapped_column(String(32))  # spam | harassment | nsfw | violence | hate | self_harm | illegal | other
+    details: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="open", nullable=False, index=True)  # open | actioned | dismissed
+    reviewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewer_id: Mapped[Optional[str]] = mapped_column(String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class UserBlock(Base):
+    """A blocker->blocked relationship. The blocker no longer sees the blocked user's posts/actions."""
+    __tablename__ = "user_blocks"
+    __table_args__ = (UniqueConstraint("blocker_id", "blocked_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    blocker_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    blocked_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PostHide(Base):
+    """A user-level soft hide — the user doesn't want to see this post again."""
+    __tablename__ = "ground_post_hides"
+    __table_args__ = (UniqueConstraint("user_id", "post_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    post_id: Mapped[str] = mapped_column(String(36), ForeignKey("ground_posts.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class NoteEmbedding(Base):

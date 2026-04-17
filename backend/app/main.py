@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -11,6 +12,7 @@ if str(_BACKEND_ROOT) not in sys.path:
 
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
 
@@ -40,6 +42,8 @@ from api.v1.notifications import router as notifications_router
 _LANDING_HTML = Path(__file__).with_name("landing.html")
 _PRODUCT_HTML = Path(__file__).with_name("product.html")
 _API_DOCS_HTML = Path(__file__).with_name("api_docs.html")
+_PRIVACY_HTML = Path(__file__).with_name("privacy.html")
+_TERMS_HTML = Path(__file__).with_name("terms.html")
 
 
 @asynccontextmanager
@@ -57,7 +61,25 @@ async def lifespan(app: FastAPI):
         await warm_pool(target=5)
     except Exception:
         logger.exception("pool_warm_error")
+
+    # Background sweeper: hard-delete accounts past the 30-day grace window.
+    # Disabled under tests to keep the event loop clean.
+    hard_delete_task = None
+    if settings.APP_ENV != "test":
+        try:
+            from app.tasks.hard_delete import sweeper_loop
+            hard_delete_task = asyncio.create_task(sweeper_loop())
+        except Exception:
+            logger.exception("hard_delete_sweeper_start_failed")
+
     yield
+
+    if hard_delete_task is not None:
+        hard_delete_task.cancel()
+        try:
+            await hard_delete_task
+        except (asyncio.CancelledError, Exception):
+            pass
     logger.info("application_shutdown")
 
 
@@ -74,6 +96,10 @@ limiter = setup_rate_limiter(app)
 
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
+
+# Gzip-compress JSON/text responses ≥500B. Saves ~60–80% of bytes on note/ground
+# list payloads and shaves ~150–400ms on Singapore→client routes over 4G.
+app.add_middleware(GZipMiddleware, minimum_size=500, compresslevel=5)
 
 app.add_middleware(
     CORSMiddleware,
@@ -141,6 +167,16 @@ async def web():
 @app.get("/product", response_class=HTMLResponse)
 async def product():
     return HTMLResponse(_PRODUCT_HTML.read_text(encoding="utf-8"))
+
+
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+async def privacy():
+    return HTMLResponse(_PRIVACY_HTML.read_text(encoding="utf-8"))
+
+
+@app.get("/terms", response_class=HTMLResponse, include_in_schema=False)
+async def terms():
+    return HTMLResponse(_TERMS_HTML.read_text(encoding="utf-8"))
 
 
 @app.get("/health")

@@ -62,12 +62,17 @@ def _content_preview(content: str | None, max_len: int = 180) -> str:
     return text[:max_len].rstrip() + "…"
 
 
+_MIND_NOTE_LIMIT = 2000  # Cap graph complexity — most recent notes only
+
 async def _load_mind_inputs(
     db: AsyncSession,
     user_id: str,
 ) -> tuple[list[Note], dict[str, list[str]], dict[tuple[str, str], float]]:
     result = await db.execute(
-        select(Note).where(Note.user_id == user_id).order_by(Note.updated_at.desc())
+        select(Note)
+        .where(Note.user_id == user_id)
+        .order_by(Note.updated_at.desc())
+        .limit(_MIND_NOTE_LIMIT)
     )
     notes = result.scalars().all()
     note_ids = [note.id for note in notes]
@@ -950,7 +955,7 @@ async def _record_connections_background(user_id: str) -> None:
                 note_b = await db.get(Note, top["note_b_id"])
                 title_a = (note_a.title if note_a else "笔记")[:15]
                 title_b = (note_b.title if note_b else "笔记")[:15]
-                await notify_mind_connection(db, user_id, title_a, title_b)
+                await notify_mind_connection(user_id, title_a, title_b)
     except Exception:
         logger.warning("Failed to record mind connections", exc_info=True)
 
