@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Real Soft Pastel</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; background: #e5e5e5; margin: 0; }
+    .iphone {
+      width: 390px; height: 844px; margin: 20px auto; background: #f9f9f9;
+      border-radius: 54px; box-shadow: 0 25px 80px rgba(0,0,0,0.22);
+      position: relative; overflow: hidden; border: 12px solid #1a1c1c;
+    }
+    .notch {
+      position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+      width: 150px; height: 34px; background: #1a1c1c; border-radius: 0 0 20px 20px; z-index: 50;
+    }
+    .status-bar {
+      position: absolute; top: 0; left: 0; right: 0; height: 54px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 28px; z-index: 40; color: #1a1c1c; font-size: 15px; font-weight: 600;
+    }
+    .content { height: 100%; overflow-y: auto; scrollbar-width: none; padding-top: 54px; padding-bottom: 120px; }
+    .content::-webkit-scrollbar { display: none; }
+    .tab-bar {
+      position: absolute; bottom: 0; left: 0; right: 0; height: 84px;
+      background: rgba(249,249,249,0.92); backdrop-filter: blur(20px);
+      border-top: 1px solid rgba(0,0,0,0.08); display: flex; justify-content: space-around; align-items: flex-start; padding-top: 8px; z-index: 40;
+    }
+    .home-indicator {
+      position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
+      width: 134px; height: 5px; background: #1a1c1c; border-radius: 3px; z-index: 50;
+    }
+    .fab {
+      position: absolute; bottom: 104px; right: 24px; width: 56px; height: 56px;
+      background: #334529; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 8px 28px rgba(51,69,41,0.35); z-index: 40;
+    }
+    .card-shadow { box-shadow: 0 2px 12px rgba(26,28,28,0.05); }
+  </style>
+</head>
+<body>
+  <div class="iphone">
+    <div class="notch"></div>
+    <div class="status-bar">
+      <span>9:41</span>
+      <div class="flex items-center gap-1.5">
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M12 3C7.46 3 3.34 4.78.29 7.67c-.18.18-.29.43-.29.71 0 .28.11.53.29.71l11 11c.39.39 1.02.39 1.41 0l11-11c.18-.18.29-.43.29-.71 0-.28-.11-.53-.29-.71C20.66 4.78 16.54 3 12 3z"/></svg>
+        <svg class="w-5 h-3" viewBox="0 0 24 12" fill="currentColor"><rect x="0.5" y="0.5" width="21" height="11" rx="2.5" stroke="currentColor" stroke-opacity="0.35" fill="none"/><rect x="2" y="2" width="18" height="8" rx="1.5"/></svg>
+      </div>
+    </div>
+
+    <div class="content">
+      <!-- Header -->
+      <div class="px-6 pb-2 pt-4">
+        <h1 class="text-[28px] font-bold text-[#1a1c1c] tracking-[-0.5px]">Collected Fragments</h1>
+        <p class="mt-1 text-sm text-[#444840]/80">Your daily thoughts and captures</p>
+        <!-- Search -->
+        <div class="mt-4 flex items-center gap-2 rounded-xl px-3 py-2.5 bg-white border border-[#c4c8bd]/20">
+          <svg class="w-[18px] h-[18px] text-[#444840]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <span class="text-[15px] text-[#c4c8bd] flex-1">Search notes...</span>
+        </div>
+      </div>
+
+      <!-- Filter Chips -->
+      <div class="py-2 overflow-x-auto scrollbar-hide">
+        <div class="flex gap-2 px-6 w-max">
+          <div class="flex items-center gap-1.5 rounded-full px-3 py-1.5 bg-white border border-[#c4c8bd]/20">
+            <svg class="w-3 h-3 text-[#444840]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+            <span class="text-xs font-medium text-[#444840]">Personal</span>
+          </div>
+          <div class="flex items-center gap-1 rounded-full px-3 py-1.5 bg-[#334529]">
+            <svg class="w-2.5 h-2.5 text-white" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            <span class="text-xs font-medium text-white">journal</span>
+          </div>
+          <div class="flex items-center gap-1 rounded-full px-3 py-1.5 bg-white border border-[#c4c8bd]/20">
+            <svg class="w-2.5 h-2.5 text-[#334529]" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            <span class="text-xs font-medium text-[#444840]">reading</span>
+          </div>
+          <div class="flex items-center gap-1 rounded-full px-3 py-1.5 bg-white border border-[#c4c8bd]/20">
+            <svg class="w-2.5 h-2.5 text-[#334529]" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            <span class="text-xs font-medium text-[#444840]">ideas</span>
+          </div>
+          <div class="flex items-center gap-1 rounded-full px-3 py-1.5 bg-white border border-[#c4c8bd]/20">
+            <svg class="w-2.5 h-2.5 text-[#334529]" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+            <span class="text-xs font-medium text-[#444840]">work</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cards -->
+      <div class="px-4 space-y-2.5 pt-1">
+        <!-- Card 1: warm cream -->
+        <div class="bg-[#fdf6e3] rounded-2xl card-shadow flex overflow-hidden border border-[#f0e6cc]">
+          <div class="w-[3px] bg-[#e6c875] rounded-l-2xl"></div>
+          <div class="flex-1 px-4 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <h4 class="text-[15px] font-semibold text-[#1a1c1c] truncate">Morning reflection at the cafe</h4>
+              <span class="text-[11px] text-[#8b7355] shrink-0">2h ago</span>
+            </div>
+            <p class="text-[13px] text-[#5c4d3a] mt-1 leading-[1.5] line-clamp-2">
+              The light through the window felt different today. It reminded me of summers in Kyoto, slow and golden...
+            </p>
+            <div class="mt-2 flex items-center gap-2">
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#8b7355]">journal</span>
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#8b7355]">morning</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 2: soft blue -->
+        <div class="bg-[#eef4fb] rounded-2xl card-shadow flex overflow-hidden border border-[#d6e3f3]">
+          <div class="w-[3px] bg-[#8ab4e6] rounded-l-2xl"></div>
+          <div class="flex-1 px-4 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <h4 class="text-[15px] font-semibold text-[#1a1c1c] truncate">Book notes: Atomic Habits</h4>
+              <span class="text-[11px] text-[#4a6fa5] shrink-0">5h ago</span>
+            </div>
+            <p class="text-[13px] text-[#3d5a7a] mt-1 leading-[1.5] line-clamp-2">
+              Small changes compound over time. Identity-based habits are more sustainable than outcome-based ones...
+            </p>
+            <div class="mt-2 flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#4a6fa5]">reading</span>
+                <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#4a6fa5]">productivity</span>
+              </div>
+              <div class="flex items-center gap-0.5 text-[#6b8cae]">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+                <span class="text-[11px]">2</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 3: soft sage -->
+        <div class="bg-[#f0f5f0] rounded-2xl card-shadow flex overflow-hidden border border-[#d8e5d8]">
+          <div class="w-[3px] bg-[#a3c9a8] rounded-l-2xl"></div>
+          <div class="flex-1 px-4 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <h4 class="text-[15px] font-semibold text-[#1a1c1c] truncate">Project ideation: Garden metaphor</h4>
+              <span class="text-[11px] text-[#5a7d5f] shrink-0">1d ago</span>
+            </div>
+            <p class="text-[13px] text-[#4a5f4e] mt-1 leading-[1.5] line-clamp-2">
+              What if the second brain could feel like a garden instead of a filing cabinet? Seeds, seasons, pruning...
+            </p>
+            <div class="mt-2 flex items-center gap-2">
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#5a7d5f]">ideas</span>
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#5a7d5f]">design</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 4: soft rose -->
+        <div class="bg-[#fdf2f2] rounded-2xl card-shadow flex overflow-hidden border border-[#f5dcdc]">
+          <div class="w-[3px] bg-[#f4a3a3] rounded-l-2xl"></div>
+          <div class="flex-1 px-4 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <h4 class="text-[15px] font-semibold text-[#1a1c1c] truncate">Q3 planning meeting notes</h4>
+              <span class="text-[11px] text-[#a35c5c] shrink-0">1d ago</span>
+            </div>
+            <p class="text-[13px] text-[#7a4a4a] mt-1 leading-[1.5] line-clamp-2">
+              Focus on retention metrics. Need to align product and marketing on the new onboarding flow...
+            </p>
+            <div class="mt-2 flex items-center justify-between">
+              <div class="flex items-center gap-2">
+                <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#a35c5c]">work</span>
+              </div>
+              <div class="flex items-center gap-0.5 text-[#c48a8a]">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"/></svg>
+                <span class="text-[11px]">4</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 5: soft teal -->
+        <div class="bg-[#f0fafa] rounded-2xl card-shadow flex overflow-hidden border border-[#d6efef]">
+          <div class="w-[3px] bg-[#7dd3d3] rounded-l-2xl"></div>
+          <div class="flex-1 px-4 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <h4 class="text-[15px] font-semibold text-[#1a1c1c] truncate">Lisbon itinerary draft</h4>
+              <span class="text-[11px] text-[#4a8a8a] shrink-0">2d ago</span>
+            </div>
+            <p class="text-[13px] text-[#3d6b6b] mt-1 leading-[1.5] line-clamp-2">
+              Day 1: Alfama at sunrise, Pasteis de Belem for breakfast, LX Factory in the afternoon...
+            </p>
+            <div class="mt-2 flex items-center gap-2">
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#4a8a8a]">travel</span>
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#4a8a8a]">lisbon</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 6: soft lavender -->
+        <div class="bg-[#f5f3ff] rounded-2xl card-shadow flex overflow-hidden border border-[#e5e0f5]">
+          <div class="w-[3px] bg-[#c4b5f5] rounded-l-2xl"></div>
+          <div class="flex-1 px-4 py-3">
+            <div class="flex items-center justify-between gap-2">
+              <h4 class="text-[15px] font-semibold text-[#1a1c1c] truncate">New running route discovery</h4>
+              <span class="text-[11px] text-[#6b5c9c] shrink-0">2d ago</span>
+            </div>
+            <p class="text-[13px] text-[#5a4d7a] mt-1 leading-[1.5] line-clamp-2">
+              Found a 5k loop along the river with almost no traffic. Perfect for morning runs...
+            </p>
+            <div class="mt-2 flex items-center gap-2">
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#6b5c9c]">health</span>
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-white/70 text-[#6b5c9c]">running</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- FAB -->
+    <div class="fab">
+      <svg class="w-7 h-7 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+    </div>
+
+    <!-- Tab Bar -->
+    <div class="tab-bar">
+      <div class="flex flex-col items-center gap-1 pt-1 opacity-100">
+        <svg class="w-6 h-6 text-[#334529]" fill="currentColor" viewBox="0 0 24 24"><path d="M19 3H4.99C3.88 3 3.01 3.9 3.01 5L3 19c0 1.1.88 2 1.99 2H19c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 12h-4c0 1.66-1.35 3-3 3s-3-1.34-3-3H4.99V5H19v10z"/></svg>
+        <span class="text-[10px] font-medium text-[#334529]">Inbox</span>
+      </div>
+      <div class="flex flex-col items-center gap-1 pt-1 opacity-60">
+        <svg class="w-6 h-6 text-[#444840]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.456 2.456L21.75 6l-1.035.259a3.375 3.375 0 00-2.456 2.456zM16.894 20.567L16.5 21.75l-.394-1.183a2.25 2.25 0 00-1.423-1.423L13.5 18.75l1.183-.394a2.25 2.25 0 001.423-1.423l.394-1.183.394 1.183a2.25 2.25 0 001.423 1.423l1.183.394-1.183.394a2.25 2.25 0 00-1.423 1.423z"/></svg>
+        <span class="text-[10px] font-medium text-[#444840]">Mind</span>
+      </div>
+      <div class="flex flex-col items-center gap-1 pt-1 opacity-60">
+        <svg class="w-6 h-6 text-[#444840]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M12 18v-5.25m0 0a6.01 6.01 0 001.5-.189m-1.5.189a6.01 6.01 0 01-1.5-.189m3.75 7.478a12.06 12.06 0 01-4.5 0m3.75 2.383a14.406 14.406 0 01-3 0M14.25 18v-.192c0-.983.658-1.823 1.508-2.316a7.5 7.5 0 10-7.517 0c.85.493 1.509 1.333 1.509 2.316V18"/></svg>
+        <span class="text-[10px] font-medium text-[#444840]">Insight</span>
+      </div>
+      <div class="flex flex-col items-center gap-1 pt-1 opacity-60">
+        <svg class="w-6 h-6 text-[#444840]" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M2.25 15a4.5 4.5 0 004.5 4.5H18a3.75 3.75 0 001.332-7.257 3 3 0 00-3.758-3.848 5.25 5.25 0 00-10.233 2.33A4.502 4.502 0 002.25 15z"/></svg>
+        <span class="text-[10px] font-medium text-[#444840]">Ground</span>
+      </div>
+    </div>
+    <div class="home-indicator"></div>
+  </div>
+</body>
+</html>

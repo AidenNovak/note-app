@@ -20,6 +20,10 @@ node_modules/
 # Large assets — keep out of git
 screenshots/
 output/
+archive/
+
+# jilly/ is a separate git repo (independent landing page project)
+jilly/
 
 # Backend
 backend/logs/

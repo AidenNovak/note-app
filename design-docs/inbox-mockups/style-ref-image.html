@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reference Image Style - Full Inbox</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body { font-family: 'Inter', sans-serif; background: #f5f5f5; }
+    .font-display { font-family: 'Playfair Display', serif; }
+    .phone {
+      width: 390px;
+      min-height: 844px;
+      background: #fafaf5;
+      margin: 40px auto;
+      border-radius: 48px;
+      box-shadow: 0 25px 80px rgba(0,0,0,0.15);
+      overflow: hidden;
+      position: relative;
+      padding-bottom: 40px;
+    }
+    .scrollbar-hide::-webkit-scrollbar { display: none; }
+  </style>
+</head>
+<body>
+  <div class="phone">
+    <!-- Header matching reference image -->
+    <div class="px-6 pt-14 pb-4 bg-[#fafaf5] flex flex-col items-center">
+      <div class="bg-[#1a1a1a] text-white px-8 py-3 rounded-full">
+        <h1 class="font-display text-[22px] font-semibold tracking-wide">Collected Fragments</h1>
+      </div>
+      <div class="w-1 h-1 rounded-full bg-[#1a1a1a] mt-3"></div>
+      <p class="text-sm text-[#444840]/80 mt-2">Your daily thoughts and captures</p>
+      <div class="w-full h-px bg-[#1a1a1a]/20 mt-3"></div>
+    </div>
+
+    <!-- List -->
+    <div class="px-5 space-y-4 overflow-y-auto scrollbar-hide" style="max-height: 680px;">
+      
+      <!-- Card 1: Journal - light blue header -->
+      <div class="bg-white rounded-[20px] shadow-sm overflow-hidden active:scale-[0.99] transition-transform">
+        <div class="bg-[#d6ebfa] px-5 py-3 rounded-t-[20px]">
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-[17px] font-bold text-[#1a1a1a] truncate">Morning Reflection</h4>
+            <span class="text-[13px] text-[#1a1a1a]/70 shrink-0">2h ago</span>
+          </div>
+        </div>
+        <div class="px-5 py-3.5">
+          <p class="text-[14px] text-[#444840] leading-[1.55] line-clamp-2">
+            The light through the window felt different today. It reminded me of summers in Kyoto, slow and golden...
+          </p>
+          <div class="mt-3 flex items-center gap-3">
+            <span class="text-[12px] text-[#334529]/60">#journal</span>
+            <span class="text-[12px] text-[#334529]/60">#morning</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 2: Reading - peach header -->
+      <div class="bg-white rounded-[20px] shadow-sm overflow-hidden active:scale-[0.99] transition-transform">
+        <div class="bg-[#f9dcc4] px-5 py-3 rounded-t-[20px]">
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-[17px] font-bold text-[#1a1a1a] truncate">Book Notes: Atomic Habits</h4>
+            <span class="text-[13px] text-[#1a1a1a]/70 shrink-0">5h ago</span>
+          </div>
+        </div>
+        <div class="px-5 py-3.5">
+          <p class="text-[14px] text-[#444840] leading-[1.55] line-clamp-2">
+            Small changes compound over time. Identity-based habits are more sustainable than outcome-based ones...
+          </p>
+          <div class="mt-3 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <span class="text-[12px] text-[#334529]/60">#reading</span>
+              <span class="text-[12px] text-[#334529]/60">#productivity</span>
+            </div>
+            <div class="flex items-center gap-0.5 text-[#74786f]">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+              <span class="text-[12px]">2</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 3: Ideas - light green header -->
+      <div class="bg-white rounded-[20px] shadow-sm overflow-hidden active:scale-[0.99] transition-transform">
+        <div class="bg-[#d4eac8] px-5 py-3 rounded-t-[20px]">
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-[17px] font-bold text-[#1a1a1a] truncate">Project ideation</h4>
+            <span class="text-[13px] text-[#1a1a1a]/70 shrink-0">5h ago</span>
+          </div>
+        </div>
+        <div class="px-5 py-3.5">
+          <p class="text-[14px] text-[#444840] leading-[1.55] line-clamp-2">
+            What if the second brain could feel like a garden instead of a filing cabinet? Seeds, seasons, pruning...
+          </p>
+          <div class="mt-3 flex items-center gap-3">
+            <span class="text-[12px] text-[#334529]/60">#ideas</span>
+            <span class="text-[12px] text-[#334529]/60">#design</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 4: Work - rose header -->
+      <div class="bg-white rounded-[20px] shadow-sm overflow-hidden active:scale-[0.99] transition-transform">
+        <div class="bg-[#f5c6cb] px-5 py-3 rounded-t-[20px]">
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-[17px] font-bold text-[#1a1a1a] truncate">Q3 planning meeting notes</h4>
+            <span class="text-[13px] text-[#1a1a1a]/70 shrink-0">1d ago</span>
+          </div>
+        </div>
+        <div class="px-5 py-3.5">
+          <p class="text-[14px] text-[#444840] leading-[1.55] line-clamp-2">
+            Focus on retention metrics. Need to align product and marketing on the new onboarding flow by end of month...
+          </p>
+          <div class="mt-3 flex items-center justify-between">
+            <div class="flex items-center gap-3">
+              <span class="text-[12px] text-[#334529]/60">#work</span>
+            </div>
+            <div class="flex items-center gap-0.5 text-[#74786f]">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+              <span class="text-[12px]">4</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 5: Travel - teal header -->
+      <div class="bg-white rounded-[20px] shadow-sm overflow-hidden active:scale-[0.99] transition-transform">
+        <div class="bg-[#b8e0e0] px-5 py-3 rounded-t-[20px]">
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-[17px] font-bold text-[#1a1a1a] truncate">Lisbon itinerary draft</h4>
+            <span class="text-[13px] text-[#1a1a1a]/70 shrink-0">2d ago</span>
+          </div>
+        </div>
+        <div class="px-5 py-3.5">
+          <p class="text-[14px] text-[#444840] leading-[1.55] line-clamp-2">
+            Day 1: Alfama at sunrise, Pasteis de Belem for breakfast, LX Factory in the afternoon. Must book fado dinner...
+          </p>
+          <div class="mt-3 flex items-center gap-3">
+            <span class="text-[12px] text-[#334529]/60">#travel</span>
+            <span class="text-[12px] text-[#334529]/60">#lisbon</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 6: Health - lavender header -->
+      <div class="bg-white rounded-[20px] shadow-sm overflow-hidden active:scale-[0.99] transition-transform">
+        <div class="bg-[#e2d5f5] px-5 py-3 rounded-t-[20px]">
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-[17px] font-bold text-[#1a1a1a] truncate">New running route discovery</h4>
+            <span class="text-[13px] text-[#1a1a1a]/70 shrink-0">2d ago</span>
+          </div>
+        </div>
+        <div class="px-5 py-3.5">
+          <p class="text-[14px] text-[#444840] leading-[1.55] line-clamp-2">
+            Found a 5k loop along the river with almost no traffic. Perfect for morning runs. Need to track pace next time.
+          </p>
+          <div class="mt-3 flex items-center gap-3">
+            <span class="text-[12px] text-[#334529]/60">#health</span>
+            <span class="text-[12px] text-[#334529]/60">#running</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 7: Finance - gray header -->
+      <div class="bg-white rounded-[20px] shadow-sm overflow-hidden active:scale-[0.99] transition-transform">
+        <div class="bg-[#d5d5d5] px-5 py-3 rounded-t-[20px]">
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-[17px] font-bold text-[#1a1a1a] truncate">Monthly budget review</h4>
+            <span class="text-[13px] text-[#1a1a1a]/70 shrink-0">3d ago</span>
+          </div>
+        </div>
+        <div class="px-5 py-3.5">
+          <p class="text-[14px] text-[#444840] leading-[1.55] line-clamp-2">
+            Dining out went 20% over budget. Groceries and utilities were under. Need to meal prep more next month.
+          </p>
+          <div class="mt-3 flex items-center gap-3">
+            <span class="text-[12px] text-[#334529]/60">#finance</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Card 8: Processing - yellow header -->
+      <div class="bg-white rounded-[20px] shadow-sm overflow-hidden active:scale-[0.99] transition-transform">
+        <div class="bg-[#f9e79f] px-5 py-3 rounded-t-[20px]">
+          <div class="flex items-center justify-between gap-2">
+            <h4 class="text-[17px] font-bold text-[#1a1a1a] truncate">Podcast transcript: Naval</h4>
+            <div class="flex items-center gap-1 shrink-0">
+              <div class="w-2 h-2 rounded-full border-2 border-[#b7950b] border-t-transparent animate-spin"></div>
+              <span class="text-[13px] text-[#1a1a1a]/70">processing</span>
+            </div>
+          </div>
+        </div>
+        <div class="px-5 py-3.5">
+          <p class="text-[14px] text-[#444840] leading-[1.55] line-clamp-2">
+            "The three big ones are: business, investing, and philosophy." Need to extract the key mental models...
+          </p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</body>
+</html>
