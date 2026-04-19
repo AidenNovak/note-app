@@ -16,10 +16,11 @@ export const captureCmd = new Command("capture")
   .option("--folder <folderId>", "Target folder id (defaults to Inbox)")
   .option("--tag <tag...>", "Tag(s) to attach", (val, prev: string[] = []) => [...prev, val])
   .option("--stdin", "Force reading from stdin")
+  .option("--json", "Print the created note as JSON (for piping into jq / scripts)")
   .action(
     async (
       text: string[],
-      opts: { file?: string; folder?: string; tag?: string[]; stdin?: boolean },
+      opts: { file?: string; folder?: string; tag?: string[]; stdin?: boolean; json?: boolean },
     ) => {
       try {
         const content = await resolveContent({
@@ -35,6 +36,10 @@ export const captureCmd = new Command("capture")
             tags: opts.tag,
           },
         });
+        if (opts.json) {
+          process.stdout.write(JSON.stringify(note, null, 2) + "\n");
+          return;
+        }
         process.stdout.write(
           pc.green(`✓ Captured — ${pc.bold(note.title)}  ${pc.gray(note.id)}\n`),
         );

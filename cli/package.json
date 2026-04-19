@@ -1,8 +1,8 @@
 {
   "name": "atelier-note",
-  "version": "0.1.0",
-  "description": "Command-line interface for atélier — Your Second Digital Mind.",
-  "keywords": ["atelier", "jilly", "notes", "cli", "ai-native", "second-brain"],
+  "version": "0.1.1",
+  "description": "Command-line interface for Truth Truth (T²) — Truth, twice.",
+  "keywords": ["atelier", "truth-truth", "jilly", "notes", "cli", "ai-native", "second-brain"],
   "homepage": "https://jilly.app",
   "repository": {
     "type": "git",

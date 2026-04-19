@@ -103,7 +103,7 @@ authCmd
           const answer = await prompts({
             type: "password",
             name: "token",
-            message: "Paste your atélier PAT (starts with atl_)",
+            message: "Paste your Truth Truth PAT (starts with atl_)",
           });
           token = (answer.token as string | undefined)?.trim();
         }

@@ -23,7 +23,10 @@ program
   .name("atelier")
   .description(
     [
-      "atélier CLI — your second digital mind, on the command line.",
+      "Truth Truth (T²) CLI — your second digital mind, on the command line.",
+      "",
+      "Brand: Truth Truth · Truth, twice. (legacy slug 'atelier' kept in env",
+      "var names, the bin name, and the config dir for backward compatibility.)",
       "",
       "Environment variables:",
       "  ATELIER_API_URL    Override the backend URL (default https://backend.jilly.app)",

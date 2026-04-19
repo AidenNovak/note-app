@@ -104,7 +104,7 @@ noteCmd
   .option("-p, --page <n>", "Page number", "1")
   .option("--folder <id>", "Filter by folder id")
   .option("--tag <tag>", "Filter by a single tag")
-  .option("--status <status>", "Filter by status (e.g. active, archived)")
+  .option("--status <status>", "Filter by AI-processing status: pending|processing|completed|failed")
   .option("-q, --keyword <q>", "Keyword match on title/content")
   .option("--sort <col>", "Sort column: created_at | updated_at | title | status", "updated_at")
   .option("--order <dir>", "asc | desc", "desc")
@@ -223,7 +223,6 @@ noteCmd
     (val, prev: string[] = []) => [...prev, val],
   )
   .option("--folder <folderId>", "Move to a folder (use 'null' or '' to detach)")
-  .option("--status <status>", "Set status (active|archived|trashed)")
   .option("--stdin", "Replace content from stdin")
   .option("--json", "Print updated note as JSON")
   .action(
@@ -234,7 +233,6 @@ noteCmd
         title?: string;
         tag?: string[];
         folder?: string;
-        status?: string;
         stdin?: boolean;
         json?: boolean;
       },
@@ -242,7 +240,6 @@ noteCmd
       try {
         const body: Record<string, unknown> = {};
         if (opts.title !== undefined) body.title = opts.title;
-        if (opts.status !== undefined) body.status = opts.status;
         if (opts.tag !== undefined) body.tags = opts.tag.filter((t) => t !== "");
         if (opts.folder !== undefined) {
           body.folder_id = opts.folder === "" || opts.folder === "null" ? null : opts.folder;
@@ -256,7 +253,7 @@ noteCmd
         if (Object.keys(body).length === 0) {
           process.stderr.write(
             pc.red(
-              "✗ Nothing to update. Pass --title / --tag / --folder / --status / --file / --stdin.\n",
+              "✗ Nothing to update. Pass --title / --tag / --folder / --file / --stdin.\n",
             ),
           );
           process.exit(1);
