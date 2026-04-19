@@ -356,6 +356,7 @@ async def get_note(
         source_type=note.source_type.value if note.source_type else None,
         source_file_id=note.source_file_id,
         current_version=note.current_version,
+        attachment_count=len(note.attachments),
         content_preview=_content_preview(note.markdown_content),
         created_at=note.created_at,
         updated_at=note.updated_at,
