@@ -1,5 +1,5 @@
 {
-  "name": "@jilly/atelier-cli",
+  "name": "atelier-note",
   "version": "0.1.0",
   "description": "Command-line interface for atélier — Your Second Digital Mind.",
   "keywords": ["atelier", "jilly", "notes", "cli", "ai-native", "second-brain"],

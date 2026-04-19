@@ -1,4 +1,4 @@
-# @jilly/atelier-cli
+# atelier-note
 
 A command-line interface for [atélier](https://jilly.app) — your second digital
 mind, scriptable from the terminal. Designed for AI-native workflows (pipe into
@@ -7,8 +7,8 @@ LLMs, cron jobs, scripts, automation).
 ## Install
 
 ```bash
-npm install -g @jilly/atelier-cli
-# or: pnpm add -g @jilly/atelier-cli
+npm install -g atelier-note
+# or: pnpm add -g atelier-note
 ```
 
 Then `atelier --help`. Requires Node 20+.

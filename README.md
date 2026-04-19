@@ -57,7 +57,7 @@ make dev
 ### 4. CLI (optional, AI-native scripting)
 
 ```bash
-npm install -g @jilly/atelier-cli
+npm install -g atelier-note
 atelier auth login --email you@example.com
 atelier note add "hello from the terminal"
 ```

@@ -1,7 +1,7 @@
 # Deployment & Release
 
 This doc is the playbook for shipping new backend versions to Railway and
-publishing new `@jilly/atelier-cli` versions to npm.
+publishing new `atelier-note` versions to npm.
 
 ## Backend (Railway)
 
@@ -54,7 +54,7 @@ DATABASE_URL="postgresql+asyncpg://…supabase…" alembic upgrade head
 
 (Requires `psycopg[binary]` locally — already pinned in `requirements.txt`.)
 
-## CLI (`@jilly/atelier-cli`)
+## CLI (`atelier-note`)
 
 ### First-time publish
 
@@ -100,14 +100,14 @@ git push --follow-tags
 ### Verifying the release
 
 ```bash
-npm info @jilly/atelier-cli version
-npx @jilly/atelier-cli@latest --help
+npm info atelier-note version
+npx atelier-note@latest --help
 ```
 
 ### User install
 
 ```bash
-npm install -g @jilly/atelier-cli
+npm install -g atelier-note
 atelier auth login --email you@example.com
 ```
 
