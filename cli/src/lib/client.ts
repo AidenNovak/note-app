@@ -115,6 +115,25 @@ export function printApiError(err: unknown): void {
       process.stderr.write(
         pc.gray(`  Run \`atelier auth login\` to sign in, or set ATELIER_TOKEN.\n`),
       );
+    } else if (err.status === 403 && err.code === "SESSION_REQUIRED") {
+      process.stderr.write(
+        pc.gray(
+          `  This endpoint can't be called with a PAT — sign in via the app\n` +
+            `  or use email+password (\`atelier auth login --email …\`) to get a JWT session.\n`,
+        ),
+      );
+    } else if (err.status === 404 && err.message === "Not Found") {
+      process.stderr.write(
+        pc.gray(
+          `  This endpoint doesn't exist on the backend you're talking to.\n` +
+            `  Either the URL is wrong, or the server is older than this CLI.\n` +
+            `  Check: \`atelier auth status\`\n`,
+        ),
+      );
+    } else if (err.status === 0) {
+      process.stderr.write(
+        pc.gray(`  Couldn't reach the API. Check your network and \`atelier auth status\`.\n`),
+      );
     }
     return;
   }

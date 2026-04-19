@@ -23,7 +23,11 @@ export async function resolveContent(opts: {
   }
   if (opts.positional) return opts.positional;
   throw new Error(
-    "No content provided. Pass text as an argument, --file <path>, or pipe via stdin.",
+    "No content provided. Pass text as an argument, --file <path>, or pipe via stdin.\n" +
+      "  Examples:\n" +
+      "    atelier note add 'a quick thought'\n" +
+      "    atelier note add --file ideas.md\n" +
+      "    echo 'piped' | atelier note add",
   );
 }
 

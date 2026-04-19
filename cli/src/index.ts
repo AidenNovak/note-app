@@ -21,8 +21,29 @@ function readVersion(): string {
 const program = new Command();
 program
   .name("atelier")
-  .description("atélier CLI — your second digital mind, on the command line.")
-  .version(readVersion());
+  .description(
+    [
+      "atélier CLI — your second digital mind, on the command line.",
+      "",
+      "Environment variables:",
+      "  ATELIER_API_URL    Override the backend URL (default https://backend.jilly.app)",
+      "  ATELIER_TOKEN      Use this PAT instead of the one in the config file",
+      "",
+      "Quickstart:",
+      "  atelier auth login --email you@example.com   # mints a 90-day PAT",
+      "  atelier capture 'a fleeting thought'",
+      "  atelier note ls --json | jq '.items[].title'",
+    ].join("\n"),
+  )
+  .version(readVersion())
+  .option(
+    "--api-url <url>",
+    "Override the backend URL for this invocation (sets ATELIER_API_URL)",
+  )
+  .hook("preAction", (thisCommand) => {
+    const apiUrl = thisCommand.opts().apiUrl as string | undefined;
+    if (apiUrl) process.env.ATELIER_API_URL = apiUrl;
+  });
 
 program.addCommand(authCmd);
 program.addCommand(noteCmd);
@@ -35,3 +56,4 @@ program.parseAsync(process.argv).catch((err) => {
   process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
   process.exit(1);
 });
+

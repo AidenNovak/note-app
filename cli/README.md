@@ -55,6 +55,7 @@ atelier auth status
 | `atelier note add <text…>` | Create a note (supports `--tag`, `--folder`, `--file`, stdin) |
 | `atelier note ls` | List notes (`--limit`, `--folder`, `--tag`, `--json`) |
 | `atelier note get <id>` | Print markdown content |
+| `atelier note edit <id>` | Update title / tags / folder / status / content |
 | `atelier note search <q…>` | Full-text search |
 | `atelier note rm <id>` | Delete (`-y` to skip confirm) |
 | `atelier folder ls` | Folder tree |
@@ -62,6 +63,12 @@ atelier auth status
 | `atelier token ls/create/rm` | Manage PATs (requires a full browser/app login — not a PAT) |
 
 Every read-style command supports `--json` for piping into `jq` or scripts.
+
+Global flags:
+
+- `--api-url <url>` — point at a different backend for one invocation
+- `--version` / `-V` — print CLI version
+- `--help` / `-h` — works on every command and subcommand
 
 ## Configuration
 

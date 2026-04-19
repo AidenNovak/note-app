@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import pc from "picocolors";
+import prompts from "prompts";
 import { apiRequest, printApiError } from "../lib/client.js";
 import { asJson, fmtDate, resolveContent, truncate } from "../lib/io.js";
 
@@ -192,7 +193,6 @@ noteCmd
   .action(async (id: string, opts: { yes?: boolean }) => {
     try {
       if (!opts.yes) {
-        const prompts = (await import("prompts")).default;
         const a = await prompts({
           type: "confirm",
           name: "ok",
@@ -211,6 +211,73 @@ noteCmd
       process.exit(1);
     }
   });
+
+noteCmd
+  .command("edit <id>")
+  .description("Update an existing note's content / title / tags / folder.")
+  .option("-f, --file <path>", "Replace content from a file")
+  .option("-t, --title <title>", "Set the title")
+  .option(
+    "--tag <tag...>",
+    "Replace tags (pass --tag multiple times). Use --tag '' to clear.",
+    (val, prev: string[] = []) => [...prev, val],
+  )
+  .option("--folder <folderId>", "Move to a folder (use 'null' or '' to detach)")
+  .option("--status <status>", "Set status (active|archived|trashed)")
+  .option("--stdin", "Replace content from stdin")
+  .option("--json", "Print updated note as JSON")
+  .action(
+    async (
+      id: string,
+      opts: {
+        file?: string;
+        title?: string;
+        tag?: string[];
+        folder?: string;
+        status?: string;
+        stdin?: boolean;
+        json?: boolean;
+      },
+    ) => {
+      try {
+        const body: Record<string, unknown> = {};
+        if (opts.title !== undefined) body.title = opts.title;
+        if (opts.status !== undefined) body.status = opts.status;
+        if (opts.tag !== undefined) body.tags = opts.tag.filter((t) => t !== "");
+        if (opts.folder !== undefined) {
+          body.folder_id = opts.folder === "" || opts.folder === "null" ? null : opts.folder;
+        }
+        if (opts.file || opts.stdin) {
+          body.markdown_content = await resolveContent({
+            file: opts.file,
+            stdin: opts.stdin,
+          });
+        }
+        if (Object.keys(body).length === 0) {
+          process.stderr.write(
+            pc.red(
+              "✗ Nothing to update. Pass --title / --tag / --folder / --status / --file / --stdin.\n",
+            ),
+          );
+          process.exit(1);
+        }
+        const note = await apiRequest<NoteOut>(`/api/v1/notes/${encodeURIComponent(id)}`, {
+          method: "PATCH",
+          body,
+        });
+        if (opts.json) {
+          process.stdout.write(asJson(note) + "\n");
+        } else {
+          process.stdout.write(
+            pc.green(`✓ Updated ${pc.bold(note.id)} — ${pc.bold(note.title)}\n`),
+          );
+        }
+      } catch (err) {
+        printApiError(err);
+        process.exit(1);
+      }
+    },
+  );
 
 noteCmd
   .command("search <query...>")
