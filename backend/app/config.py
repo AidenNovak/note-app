@@ -53,7 +53,7 @@ def _normalize_async_database_url(database_url: str) -> str:
 
 class Settings(BaseSettings):
     APP_ENV: Literal["development", "test", "production"] = "development"
-    APP_NAME: str = "atelier API"
+    APP_NAME: str = "Truth Truth API"
     APP_VERSION: str = "1.0.0"
     DATABASE_URL: str = "sqlite+aiosqlite:///./data/notes.db"
     # SECURITY: SECRET_KEY must be set via environment variable in production
@@ -85,7 +85,7 @@ class Settings(BaseSettings):
 
     # ── Email (Resend) ────────────────────────────────────
     RESEND_API_KEY: str = ""
-    EMAIL_FROM_NAME: str = "atélier"
+    EMAIL_FROM_NAME: str = "Truth Truth"
     EMAIL_FROM_ADDRESS: str = "noreply@jilly.app"
 
     # ── Storage (R2 via S3 API) ───────────────────────────
@@ -126,6 +126,10 @@ class Settings(BaseSettings):
     AI_MAX_TOKENS: int = 4096
     AI_TEMPERATURE: float = 0.7
     AI_STREAMING: bool = True
+
+    # Insights pipeline uses a reasoning-capable model so the user can see
+    # the model "think" in real time. Falls back to AI_MODEL if empty.
+    INSIGHTS_AI_MODEL: str = "moonshotai/kimi-k2-thinking"
 
     # Provider-specific keys (only for specialized tasks, NOT for general LLM)
     OPENAI_API_KEY: str = ""       # Whisper audio transcription

@@ -1,6 +1,9 @@
-"""Unified LLM layer built on ai-sdk-python.
+"""Unified LLM layer for the insights pipeline.
 
-All LLM calls route through OpenRouter using the single AI_MODEL config.
+All calls route through OpenRouter using the unified ``AI_MODEL``. Output
+shape is enforced at the wire via OpenAI ``response_format`` (json_schema),
+so system prompts in this module describe **analysis intent only** — never
+JSON field shapes.
 """
 from __future__ import annotations
 
@@ -11,7 +14,7 @@ from dataclasses import dataclass
 from typing import Any, Type, TypeVar
 
 try:
-    from ai_sdk import generate_text, stream_text
+    from ai_sdk import generate_text
     from ai_sdk.providers.language_model import LanguageModel
     from ai_sdk.providers.openai import OpenAIModel
     _HAS_AI_SDK = True
@@ -23,10 +26,13 @@ import openai as _openai_lib
 from pydantic import BaseModel
 
 from app.config import settings
+from app.intelligence.ai.response_schemas import response_format_for
 from app.intelligence.insights.schemas_ai import (
     AngleListOutput,
+    InsightReportExtractionOutput,
     InsightReportOutput,
     NoteGroupListOutput,
+    ShareCardOutput,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,19 +45,14 @@ class GeneratedTextResult:
     text: str
     finish_reason: str | None = None
     usage: Any = None
+    reasoning: str = ""
 
 
 # ── Provider / Model Factory ───────────────────────────
 
 
-def get_model(
-    model_name: str | None = None,
-) -> LanguageModel:
-    """Create an AI SDK model instance via OpenRouter.
-
-    All LLM calls are routed through OpenRouter using the unified AI_MODEL config.
-    Pass *model_name* to override for a specific call.
-    """
+def get_model(model_name: str | None = None) -> LanguageModel:
+    """Create an AI SDK model instance via OpenRouter."""
     model_name = model_name or settings.AI_MODEL
     api_key = settings.OPENROUTER_API_KEY
 
@@ -70,15 +71,27 @@ def get_model(
 
 
 def get_agent_model() -> LanguageModel:
-    """Get model for agent workflows. Uses the same unified AI_MODEL."""
     return get_model()
 
 
-# ── JSON Parsing ───────────────────────────────────────
+def get_insights_model() -> LanguageModel:
+    """Reasoning-capable model for the insights pipeline.
+
+    Falls back to ``AI_MODEL`` when ``INSIGHTS_AI_MODEL`` is empty.
+    """
+    return get_model(model_name=settings.INSIGHTS_AI_MODEL or settings.AI_MODEL)
+
+
+def _resolve_model_id(model: LanguageModel, default: str) -> str:
+    """Recover the wire model id from either the ai_sdk wrapper or a fallback."""
+    return getattr(model, "_model", None) or default
+
+
+# ── JSON Parsing (fallback path only) ──────────────────
 
 
 def _extract_json(text: str) -> str:
-    """Extract JSON from LLM response, stripping markdown fences and surrounding text."""
+    """Strip markdown fences and locate the outer JSON object/array."""
     cleaned = text.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.split("\n", 1)[1] if "\n" in cleaned else cleaned[3:]
@@ -86,7 +99,6 @@ def _extract_json(text: str) -> str:
             cleaned = cleaned[:-3]
         cleaned = cleaned.strip()
 
-    # Try to find a balanced JSON object or array
     for start_char, end_char in [("{", "}"), ("[", "]")]:
         start = cleaned.find(start_char)
         if start == -1:
@@ -118,26 +130,19 @@ def _extract_json(text: str) -> str:
 
 
 def _fix_json_escapes(s: str) -> str:
-    """Fix invalid backslash escapes that LLMs often produce in JSON strings."""
+    """Fix invalid backslash escapes that LLMs occasionally produce."""
     import re
-    # Strip control characters (keep \n \r \t which are valid in JSON)
     s = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', ' ', s)
-    # Fix invalid \escape sequences: replace \ not followed by valid JSON escape chars
-    # Valid JSON escapes: \" \\ \/ \b \f \n \r \t \uXXXX
     s = re.sub(r'\\(?!["\\/bfnrtu])', r'\\\\', s)
     return s
 
 
 def _parse_to_model(text: str, model_class: Type[T]) -> T:
-    """Parse LLM text output into a Pydantic model."""
-    json_str = _extract_json(text)
-    json_str = _fix_json_escapes(json_str)
-    logger.debug("LLM raw text length=%d, extracted JSON length=%d", len(text), len(json_str))
+    json_str = _fix_json_escapes(_extract_json(text))
     try:
         return model_class.model_validate_json(json_str)
     except Exception:
-        data = json.loads(json_str)
-        return model_class.model_validate(data)
+        return model_class.model_validate(json.loads(json_str))
 
 
 def _extract_message_text(content: Any) -> str:
@@ -154,6 +159,15 @@ def _extract_message_text(content: Any) -> str:
     return ""
 
 
+def _resolve_openai_client(model: LanguageModel):
+    client = getattr(model, "_client", None)
+    if client is None and hasattr(model, "chat"):
+        client = model
+    if client is None:
+        raise RuntimeError("Model does not expose an OpenAI client")
+    return client
+
+
 def _generate_text_sync(
     *,
     model: LanguageModel,
@@ -161,8 +175,12 @@ def _generate_text_sync(
     prompt: str,
     max_tokens: int,
     temperature: float,
+    response_format: dict[str, Any] | None = None,
 ) -> GeneratedTextResult:
-    if _HAS_AI_SDK:
+    """Generate text. When ``response_format`` is provided, bypass ai_sdk and
+    use the OpenAI client directly so the schema reaches the wire."""
+    use_ai_sdk = _HAS_AI_SDK and response_format is None
+    if use_ai_sdk:
         result = generate_text(
             model=model,
             system=system,
@@ -176,20 +194,27 @@ def _generate_text_sync(
             usage=getattr(result, "usage", None),
         )
 
-    response = model.chat.completions.create(
-        model=settings.AI_MODEL,
-        messages=[
+    client = _resolve_openai_client(model)
+    payload: dict[str, Any] = {
+        "model": settings.AI_MODEL,
+        "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
         ],
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+    }
+    if response_format is not None:
+        payload["response_format"] = response_format
+
+    response = client.chat.completions.create(**payload)
     choice = response.choices[0] if response.choices else None
     text = _extract_message_text(choice.message.content) if choice and getattr(choice, "message", None) else ""
-    usage = getattr(response, "usage", None)
-    finish_reason = getattr(choice, "finish_reason", None) if choice else None
-    return GeneratedTextResult(text=text, finish_reason=finish_reason, usage=usage)
+    return GeneratedTextResult(
+        text=text,
+        finish_reason=getattr(choice, "finish_reason", None) if choice else None,
+        usage=getattr(response, "usage", None),
+    )
 
 
 async def _generate_text_result(
@@ -199,6 +224,7 @@ async def _generate_text_result(
     prompt: str,
     max_tokens: int,
     temperature: float,
+    response_format: dict[str, Any] | None = None,
 ) -> GeneratedTextResult:
     return await asyncio.to_thread(
         _generate_text_sync,
@@ -207,7 +233,245 @@ async def _generate_text_result(
         prompt=prompt,
         max_tokens=max_tokens,
         temperature=temperature,
+        response_format=response_format,
     )
+
+
+# ── Streaming primitive ────────────────────────────────
+
+
+class _ThinkBlockSplitter:
+    """Strip ``<think>...</think>`` blocks from streamed content.
+
+    Some reasoning models (e.g. via OpenRouter) emit the chain-of-thought
+    inline inside ``delta.content`` between ``<think>`` tags rather than via
+    a separate ``delta.reasoning`` field. This splitter is fed chunks
+    incrementally and yields ``(content_part, reasoning_part)`` pairs,
+    correctly handling tags that straddle chunk boundaries.
+    """
+
+    OPEN = "<think>"
+    CLOSE = "</think>"
+
+    def __init__(self) -> None:
+        self.in_think = False
+        self.buf = ""  # tail bytes that might be a partial tag
+
+    @staticmethod
+    def _max_partial_at_end(text: str, target: str) -> int:
+        for n in range(min(len(text), len(target) - 1), 0, -1):
+            if text.endswith(target[:n]):
+                return n
+        return 0
+
+    def feed(self, chunk: str) -> tuple[str, str]:
+        text = self.buf + chunk
+        self.buf = ""
+        content_out: list[str] = []
+        reasoning_out: list[str] = []
+        while text:
+            if not self.in_think:
+                idx = text.find(self.OPEN)
+                if idx >= 0:
+                    if idx:
+                        content_out.append(text[:idx])
+                    text = text[idx + len(self.OPEN):]
+                    self.in_think = True
+                    continue
+                tail = self._max_partial_at_end(text, self.OPEN)
+                if tail:
+                    content_out.append(text[:-tail])
+                    self.buf = text[-tail:]
+                else:
+                    content_out.append(text)
+                text = ""
+            else:
+                idx = text.find(self.CLOSE)
+                if idx >= 0:
+                    if idx:
+                        reasoning_out.append(text[:idx])
+                    text = text[idx + len(self.CLOSE):]
+                    self.in_think = False
+                    continue
+                tail = self._max_partial_at_end(text, self.CLOSE)
+                if tail:
+                    reasoning_out.append(text[:-tail])
+                    self.buf = text[-tail:]
+                else:
+                    reasoning_out.append(text)
+                text = ""
+        return "".join(content_out), "".join(reasoning_out)
+
+    def flush(self) -> tuple[str, str]:
+        if not self.buf:
+            return "", ""
+        leftover = self.buf
+        self.buf = ""
+        if self.in_think:
+            return "", leftover
+        return leftover, ""
+
+
+def _stream_text_sync(
+    *,
+    model: LanguageModel,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    model_name: str | None = None,
+    on_delta=None,
+) -> GeneratedTextResult:
+    """Stream a single completion. No ``response_format`` — model is free.
+
+    ``on_delta(content_delta, reasoning_delta)`` is invoked synchronously
+    for each chunk that produces text. Either part may be empty. Returns
+    the accumulated final result with ``reasoning`` populated.
+    """
+    client = _resolve_openai_client(model)
+    model_id = _resolve_model_id(model, model_name or settings.AI_MODEL)
+
+    payload: dict[str, Any] = {
+        "model": model_id,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        # OpenRouter convention: surface a ``reasoning`` delta when the
+        # underlying model produces a chain-of-thought trace.
+        "extra_body": {"reasoning": {"enabled": True}},
+    }
+
+    splitter = _ThinkBlockSplitter()
+    full_content: list[str] = []
+    full_reasoning: list[str] = []
+    finish_reason: str | None = None
+    usage: Any = None
+
+    stream = client.chat.completions.create(**payload)
+    for chunk in stream:
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            usage = chunk_usage
+        if not getattr(chunk, "choices", None):
+            continue
+        choice = chunk.choices[0]
+        if getattr(choice, "finish_reason", None):
+            finish_reason = choice.finish_reason
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+
+        # Some providers expose reasoning under different attribute names.
+        reasoning_explicit = (
+            getattr(delta, "reasoning", None)
+            or getattr(delta, "reasoning_content", None)
+            or ""
+        )
+        content_raw = getattr(delta, "content", None) or ""
+        content_part, reasoning_inline = splitter.feed(content_raw)
+        reasoning_total = (reasoning_explicit or "") + reasoning_inline
+
+        if content_part:
+            full_content.append(content_part)
+        if reasoning_total:
+            full_reasoning.append(reasoning_total)
+        if on_delta and (content_part or reasoning_total):
+            on_delta(content_part, reasoning_total)
+
+    flushed_content, flushed_reasoning = splitter.flush()
+    if flushed_content:
+        full_content.append(flushed_content)
+    if flushed_reasoning:
+        full_reasoning.append(flushed_reasoning)
+    if on_delta and (flushed_content or flushed_reasoning):
+        on_delta(flushed_content, flushed_reasoning)
+
+    return GeneratedTextResult(
+        text="".join(full_content),
+        reasoning="".join(full_reasoning),
+        finish_reason=finish_reason,
+        usage=usage,
+    )
+
+
+async def _stream_text_result(
+    *,
+    model: LanguageModel,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    model_name: str | None = None,
+    on_delta=None,
+) -> GeneratedTextResult:
+    """Async wrapper around ``_stream_text_sync``.
+
+    ``on_delta`` may be either a sync callable ``(content, reasoning) -> None``
+    or an async coroutine; the wrapper dispatches deltas back onto the
+    event loop so async callbacks (e.g. ``broadcast_log``) can ``await``.
+    """
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue = asyncio.Queue()
+    SENTINEL_DONE = "__done__"
+    SENTINEL_ERROR = "__error__"
+
+    def _push_delta(content: str, reasoning: str) -> None:
+        loop.call_soon_threadsafe(
+            queue.put_nowait, ("delta", content, reasoning)
+        )
+
+    def _runner() -> None:
+        try:
+            result = _stream_text_sync(
+                model=model,
+                system=system,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                model_name=model_name,
+                on_delta=_push_delta,
+            )
+            loop.call_soon_threadsafe(queue.put_nowait, (SENTINEL_DONE, result))
+        except BaseException as exc:  # noqa: BLE001
+            loop.call_soon_threadsafe(queue.put_nowait, (SENTINEL_ERROR, exc))
+
+    task = asyncio.create_task(asyncio.to_thread(_runner))
+    try:
+        while True:
+            item = await queue.get()
+            kind = item[0]
+            if kind == SENTINEL_DONE:
+                return item[1]
+            if kind == SENTINEL_ERROR:
+                raise item[1]
+            _, content, reasoning = item
+            if on_delta is None:
+                continue
+            res = on_delta(content, reasoning)
+            if asyncio.iscoroutine(res):
+                await res
+    finally:
+        if not task.done():
+            await task
+
+
+# ── Response format builders (strict=False; schema acts as guidance,
+#    parser handles minor drift). ───────────────────────
+
+_REPORT_RESPONSE_FORMAT = response_format_for(
+    InsightReportOutput, name="insight_report", strict=False
+).to_openai_payload()
+_GROUPS_RESPONSE_FORMAT = response_format_for(
+    NoteGroupListOutput, name="note_groups", strict=False
+).to_openai_payload()
+_ANGLES_RESPONSE_FORMAT = response_format_for(
+    AngleListOutput, name="analysis_angles", strict=False
+).to_openai_payload()
 
 
 # ── Convenience Wrappers ───────────────────────────────
@@ -219,13 +483,6 @@ async def generate_report(
     user_prompt: str,
     model: LanguageModel | None = None,
 ) -> InsightReportOutput:
-    """Generate a structured insight report via generate_text + Pydantic parsing.
-
-    The system prompt already describes the expected JSON schema in detail.
-    We use generate_text (not generate_object) because AI SDK's schema
-    instruction builder oversimplifies nested models.
-    generate_text is synchronous, so we run it in a thread to avoid blocking the event loop.
-    """
     model = model or get_model()
     result = await _generate_text_result(
         model=model,
@@ -233,9 +490,10 @@ async def generate_report(
         prompt=user_prompt,
         max_tokens=settings.AI_MAX_TOKENS,
         temperature=settings.AI_TEMPERATURE,
+        response_format=_REPORT_RESPONSE_FORMAT,
     )
     logger.info("generate_report: finish_reason=%s, text_len=%d, usage=%s",
-                result.finish_reason, len(result.text) if result.text else 0, result.usage)
+                result.finish_reason, len(result.text or ""), result.usage)
     if not result.text:
         raise RuntimeError(f"AI provider returned empty response (finish_reason={result.finish_reason})")
     return _parse_to_model(result.text, InsightReportOutput)
@@ -247,12 +505,6 @@ async def generate_groups(
     user_prompt: str,
     model: LanguageModel | None = None,
 ) -> NoteGroupListOutput:
-    """Generate note groupings via generate_text + Pydantic parsing.
-
-    The s0 prompt describes the expected JSON array format. Handles various
-    model output formats: bare array, wrapped dict, or single group object.
-    generate_text is synchronous, so we run it in a thread to avoid blocking the event loop.
-    """
     model = model or get_agent_model()
     result = await _generate_text_result(
         model=model,
@@ -260,182 +512,31 @@ async def generate_groups(
         prompt=user_prompt,
         max_tokens=settings.AI_MAX_TOKENS,
         temperature=settings.AI_TEMPERATURE,
+        response_format=_GROUPS_RESPONSE_FORMAT,
     )
     if not result.text:
         raise RuntimeError(f"AI provider returned empty response (finish_reason={result.finish_reason})")
-    json_str = _extract_json(result.text)
-    data = json.loads(json_str)
-
-    # Normalize to {"groups": [...]}}
-    if isinstance(data, list):
-        data = {"groups": data}
-    elif isinstance(data, dict):
-        # Check if it's a wrapped response like {"groups": [...]}
-        for key in ("groups", "data", "result"):
-            if key in data and isinstance(data[key], list):
-                data = {"groups": data[key]}
-                break
-        else:
-            # Single group object (has "angle"/"note_ids") — wrap in array
-            if "angle" in data or "note_ids" in data:
-                data = {"groups": [data]}
-
-    return NoteGroupListOutput.model_validate(data)
-
-
-async def stream_and_broadcast(
-    *,
-    system: str,
-    user_prompt: str,
-    generation_id: str,
-    stream_prefix: str = "",
-    model: LanguageModel | None = None,
-) -> str:
-    """Stream text generation and broadcast tokens via SSE.
-
-    Returns the collected full text.
-    """
-    from app.intelligence.insights.service import broadcast_log
-
-    model = model or get_agent_model()
-    collected = ""
-
-    if _HAS_AI_SDK:
-        result = stream_text(
-            model=model,
-            system=system,
-            prompt=user_prompt,
-        )
-
-        async for chunk in result.text_stream:
-            collected += chunk
-            await broadcast_log(generation_id, {
-                "type": "token",
-                "token": chunk,
-                "prefix": stream_prefix,
-            })
-    else:
-        def _sync_stream() -> list[str]:
-            tokens: list[str] = []
-            stream = model.chat.completions.create(
-                model=settings.AI_MODEL,
-                messages=[
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_prompt},
-                ],
-                max_tokens=settings.AI_MAX_TOKENS,
-                temperature=settings.AI_TEMPERATURE,
-                stream=True,
-            )
-            for chunk in stream:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                token = delta.content if delta and delta.content else ""
-                if token:
-                    tokens.append(token)
-            return tokens
-
-        for token in await asyncio.to_thread(_sync_stream):
-            collected += token
-            await broadcast_log(generation_id, {
-                "type": "token",
-                "token": token,
-                "prefix": stream_prefix,
-            })
-
-    return collected
-
-
-async def stream_messages_and_broadcast(
-    *,
-    messages: list[dict],
-    generation_id: str,
-    stream_prefix: str = "",
-    model: LanguageModel | None = None,
-) -> str:
-    """Stream a multi-turn conversation and broadcast tokens via SSE.
-
-    Uses the model's underlying OpenAI client for full messages support.
-    The OpenAI streaming API is synchronous, so we run it in a thread
-    and collect results to avoid blocking the event loop.
-    Returns the collected full text.
-    """
-    from app.intelligence.insights.service import broadcast_log
-
-    model = model or get_agent_model()
-
-    # Use the underlying OpenAI client directly for message-based streaming
-    client = getattr(model, "_client", None)
-    if client is None and hasattr(model, "chat"):
-        client = model
-    if client is None:
-        raise RuntimeError("Model does not expose an OpenAI client; cannot stream messages")
-
-    model_id = getattr(model, "_model", settings.AI_MODEL)
-
-    def _sync_stream() -> list[str]:
-        tokens: list[str] = []
-        stream = client.chat.completions.create(
-            model=model_id,
-            messages=messages,
-            max_tokens=settings.AGENT_MAX_TOKENS_PER_TURN,
-            temperature=0.7,
-            stream=True,
-        )
-        for chunk in stream:
-            delta = chunk.choices[0].delta if chunk.choices else None
-            token = delta.content if delta and delta.content else ""
-            if token:
-                tokens.append(token)
-        return tokens
-
-    tokens = await asyncio.to_thread(_sync_stream)
-    collected = ""
-    for token in tokens:
-        collected += token
-        await broadcast_log(generation_id, {
-            "type": "token",
-            "token": token,
-            "prefix": stream_prefix,
-        })
-
-    return collected
+    return _parse_to_model(result.text, NoteGroupListOutput)
 
 
 # ── Clustered Pipeline: Angle Discovery ────────────────
 
 ANGLE_DISCOVERY_SYSTEM = """\
-你是一个知识分析专家。给定用户笔记的聚类摘要，你需要从中发现 {num_angles} 个有价值的分析角度。
+你是一个知识分析专家。给定用户笔记的聚类摘要，从中发现 {num_angles} 个有价值的分析角度。
 
-## 要求
-
+要求：
 1. 每个角度必须基于多条笔记之间的联系，而非单条笔记的内容。
-2. 角度应该多样化——涵盖模式发现、隐藏联系、知识空白、趋势变化、跨域综合等不同类型。
+2. 角度多样化——涵盖模式发现、隐藏联系、知识空白、趋势变化、跨域综合等不同类型。
 3. 每个角度选择 5-15 条最相关的笔记 ID。
 4. 优先发现**非显而易见**的洞察角度。
 5. 用中文输出。
 
-## 报告类型说明
-- pattern: 发现笔记中反复出现的行为/思维模式
-- connection: 发现看似无关的笔记之间的隐藏联系
-- gap: 发现知识或实践中的空白与矛盾
-- trend: 发现随时间演变的趋势和变化
+`type_hint` 选值：
+- pattern: 反复出现的行为/思维模式
+- connection: 看似无关的笔记之间的隐藏联系
+- gap: 知识或实践中的空白与矛盾
+- trend: 随时间演变的趋势和变化
 - synthesis: 跨多个领域的综合分析
-
-## 输出格式
-
-返回 JSON:
-```json
-{{
-  "angles": [
-    {{
-      "angle_name": "2-6字角度名称",
-      "description": "1-2句话描述该角度要探索的问题",
-      "note_ids": ["id1", "id2", ...],
-      "type_hint": "pattern|connection|gap|trend|synthesis"
-    }}
-  ]
-}}
-```
 """
 
 
@@ -455,82 +556,238 @@ async def discover_angles(
         prompt=cluster_summaries,
         max_tokens=settings.AI_MAX_TOKENS,
         temperature=0.8,  # slightly higher for creative angle discovery
+        response_format=_ANGLES_RESPONSE_FORMAT,
     )
     if not result.text:
         raise RuntimeError(f"Angle discovery returned empty (finish_reason={result.finish_reason})")
 
     logger.info("discover_angles: text_len=%d, usage=%s", len(result.text), result.usage)
-
-    json_str = _extract_json(result.text)
-    json_str = _fix_json_escapes(json_str)
-    data = json.loads(json_str)
-
-    # Normalize: might be {"angles": [...]} or bare [...]
-    if isinstance(data, list):
-        data = {"angles": data}
-    elif isinstance(data, dict) and "angles" not in data:
-        # Maybe single angle or differently keyed
-        for key in ("results", "data", "analysis"):
-            if key in data and isinstance(data[key], list):
-                data = {"angles": data[key]}
-                break
-        else:
-            if "angle_name" in data:
-                data = {"angles": [data]}
-
-    return AngleListOutput.model_validate(data)
+    return _parse_to_model(result.text, AngleListOutput)
 
 
 # ── Clustered Pipeline: Per-Angle Report Generation ────
+#
+# Two-step generation:
+#   Step 1 — free-form streaming markdown write (no response_format,
+#            tokens stream live to the SSE pipe so the client can render
+#            both the model's thinking and the report body in real time).
+#   Step 2 — one-shot strict-JSON extraction of metadata
+#            (title/description/scores/evidence/actions/share_card)
+#            from the markdown produced in Step 1.
 
 ANGLE_REPORT_SYSTEM = """\
-你是一位深度知识分析师。根据给定的分析角度和相关笔记，生成一篇有深度的中文洞察报告。
+你是一位深度知识分析师。根据给定的分析角度和相关笔记，写一篇有深度的中文洞察报告。
 
-## 分析角度
-{angle_name}: {angle_description}
+分析角度：{angle_name} — {angle_description}
+报告类型：{type_hint}
 
-## 要求
-
-1. 报告必须用**中文**撰写。
-2. 第一段必须是 50-100 字的独立摘要。
-3. 后续用 ## 标题分节，深入分析。
-4. 提供**真正的洞见**——不是笔记内容的简单汇总，而是发现隐藏的模式、联系和启示。
-5. 引用具体笔记作为证据。
-6. 提出 1-3 个可执行的行动建议。
-7. 报告类型: {type_hint}
-
-## 输出格式
-
-返回**严格合法的** JSON（不要包含注释、末尾逗号或未转义的控制字符）:
-{{
-  "title": "引人入胜的报告标题",
-  "description": "2-3句话的执行摘要",
-  "type": "{type_hint}",
-  "report_markdown": "完整的 Markdown 报告正文。第一段必须是独立的50-100字摘要。",
-  "confidence": 0.0-1.0,
-  "importance_score": 0.0-1.0,
-  "novelty_score": 0.0-1.0,
-  "evidence_items": [
-    {{"note_id": "笔记ID", "quote": "引用原文", "rationale": "为什么这条证据重要"}}
-  ],
-  "action_items": [
-    {{"title": "行动标题", "detail": "具体步骤", "priority": "high|medium|low"}}
-  ],
-  "share_card": {{
-    "theme": "report",
-    "eyebrow": "INSIGHT REPORT",
-    "headline": "≤80字的标题",
-    "summary": "2-3句话摘要",
-    "highlight": "最惊人的发现",
-    "evidence_quote": "最佳支撑引文",
-    "evidence_source": "来源笔记标题",
-    "action_title": "首要推荐行动",
-    "action_detail": "简要细节",
-    "metrics": [{{"label": "分析笔记数", "value": "{note_count}"}}],
-    "footer": "生成于 {date}"
-  }}
-}}
+写作要求：
+1. 全文用**中文**。
+2. 第一段是 50-100 字的独立摘要，自然成段，不要写"摘要"二字。
+3. 之后用 `## 标题` 分若干小节深入分析。
+4. 在正文中自然引用具体笔记（用笔记标题或关键短语），不要只罗列。
+5. 提供**真正的洞见**——发现隐藏的模式、联系或启示，不是简单汇总。
+6. 直接输出 Markdown 正文，不要包裹代码块，不要多余的元数据。
 """
+
+
+_REPORT_EXTRACTION_RESPONSE_FORMAT = response_format_for(
+    InsightReportExtractionOutput, name="insight_report_metadata", strict=False
+).to_openai_payload()
+
+
+REPORT_EXTRACTION_SYSTEM = """\
+你是一名信息抽取助手。基于已写好的报告 Markdown 与源笔记列表，抽取结构化元数据。
+
+要求：
+1. `title`：报告标题（≤ 30 字）。
+2. `description`：1-2 句概述（50-120 字），可来自正文第一段。
+3. `type` 必须是：{type_hint}
+4. `evidence_items[].note_id` **只能**从下面"可用笔记 ID"列表里选，禁止编造。
+5. `action_items` 给 1-3 条可执行行动（高优先在前）。
+6. `share_card`：
+   - eyebrow 固定 "INSIGHT REPORT"
+   - headline ≤ 80 字
+   - metrics 至少包含 {{label: "分析笔记数", value: "{note_count}"}}
+   - footer 用 "生成于 {date}"
+7. confidence/importance_score/novelty_score 给 0-1 之间的合理值。
+"""
+
+
+def _build_notes_index_block(note_index: list[tuple[str, str]]) -> str:
+    """Render a compact id→title list to ground evidence ids in Step 2."""
+    lines = [f"- {nid}: {title}" for nid, title in note_index]
+    return "\n".join(lines)
+
+
+def _fallback_extraction(
+    markdown: str,
+    *,
+    angle_name: str,
+    type_hint: str,
+    note_count: int,
+    date: str,
+) -> InsightReportExtractionOutput:
+    """Synthesize minimal metadata from the markdown body when Step 2 fails."""
+    text = (markdown or "").strip()
+    first_line = ""
+    first_para = ""
+    if text:
+        for line in text.splitlines():
+            stripped = line.strip().lstrip("# ").strip()
+            if stripped:
+                first_line = stripped
+                break
+        para_buf: list[str] = []
+        for line in text.splitlines():
+            if line.strip():
+                if line.lstrip().startswith("#"):
+                    if para_buf:
+                        break
+                    continue
+                para_buf.append(line.strip())
+            elif para_buf:
+                break
+        first_para = " ".join(para_buf)[:240]
+
+    title = (first_line or angle_name or "洞察报告")[:30]
+    description = (first_para or title)[:240]
+    share_card = ShareCardOutput(
+        headline=title[:80],
+        summary=description,
+        metrics=[],  # let downstream share-card builder fill defaults
+        footer=f"生成于 {date}",
+    )
+    return InsightReportExtractionOutput(
+        title=title,
+        description=description,
+        type=type_hint,
+        confidence=0.5,
+        importance_score=0.6,
+        novelty_score=0.5,
+        evidence_items=[],
+        action_items=[],
+        share_card=share_card,
+    )
+
+
+async def write_report_markdown(
+    *,
+    angle_name: str,
+    angle_description: str,
+    type_hint: str,
+    notes_content: str,
+    generation_id: str,
+    group_index: int,
+    model: LanguageModel | None = None,
+) -> GeneratedTextResult:
+    """Step 1 — stream a free-form markdown report. Broadcasts deltas live."""
+    from app.intelligence.insights.service import broadcast_log
+
+    model = model or get_insights_model()
+    system = ANGLE_REPORT_SYSTEM.format(
+        angle_name=angle_name,
+        angle_description=angle_description,
+        type_hint=type_hint,
+    )
+
+    async def on_delta(content: str, reasoning: str) -> None:
+        if reasoning:
+            await broadcast_log(generation_id, {
+                "type": "thinking_delta",
+                "group": group_index,
+                "text": reasoning,
+            })
+        if content:
+            await broadcast_log(generation_id, {
+                "type": "markdown_delta",
+                "group": group_index,
+                "text": content,
+            })
+
+    result = await _stream_text_result(
+        model=model,
+        system=system,
+        prompt=notes_content,
+        max_tokens=settings.AI_MAX_TOKENS,
+        temperature=settings.AI_TEMPERATURE,
+        on_delta=on_delta,
+    )
+
+    if not result.text.strip():
+        raise RuntimeError(
+            f"Streaming report write for '{angle_name}' produced empty markdown "
+            f"(finish_reason={result.finish_reason})"
+        )
+
+    logger.info(
+        "write_report_markdown[%s]: text_len=%d, reasoning_len=%d, finish=%s",
+        angle_name, len(result.text), len(result.reasoning), result.finish_reason,
+    )
+    return result
+
+
+async def extract_report_metadata(
+    *,
+    markdown: str,
+    angle_name: str,
+    type_hint: str,
+    note_index: list[tuple[str, str]],
+    note_count: int,
+    date: str,
+    model: LanguageModel | None = None,
+) -> InsightReportExtractionOutput:
+    """Step 2 — one-shot strict-JSON extraction over the Step-1 markdown."""
+    model = model or get_model()  # cheaper general model is fine here
+    system = REPORT_EXTRACTION_SYSTEM.format(
+        type_hint=type_hint,
+        note_count=note_count,
+        date=date,
+    )
+    notes_block = _build_notes_index_block(note_index)
+    user_prompt = (
+        "## 可用笔记 ID（evidence_items.note_id 只能用这些）\n"
+        f"{notes_block}\n\n"
+        "## 报告 Markdown\n"
+        f"{markdown}"
+    )
+
+    try:
+        result = await _generate_text_result(
+            model=model,
+            system=system,
+            prompt=user_prompt,
+            max_tokens=settings.AI_MAX_TOKENS,
+            temperature=settings.AI_TEMPERATURE,
+            response_format=_REPORT_EXTRACTION_RESPONSE_FORMAT,
+        )
+        if not result.text:
+            raise RuntimeError(
+                f"Extraction returned empty (finish_reason={result.finish_reason})"
+            )
+        extracted = _parse_to_model(result.text, InsightReportExtractionOutput)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "extract_report_metadata fallback for '%s': %s", angle_name, exc,
+        )
+        return _fallback_extraction(
+            markdown,
+            angle_name=angle_name,
+            type_hint=type_hint,
+            note_count=note_count,
+            date=date,
+        )
+
+    # Drop hallucinated evidence note_ids that aren't in the source set.
+    valid_ids = {nid for nid, _ in note_index}
+    extracted.evidence_items = [
+        ev for ev in extracted.evidence_items if ev.note_id in valid_ids
+    ]
+    if extracted.type not in {"pattern", "connection", "gap", "trend", "synthesis", "report"}:
+        extracted.type = type_hint
+    elif extracted.type == "report":
+        extracted.type = type_hint
+    return extracted
 
 
 async def generate_report_for_angle(
@@ -544,43 +801,65 @@ async def generate_report_for_angle(
     generation_id: str,
     group_index: int,
     model: LanguageModel | None = None,
+    note_index: list[tuple[str, str]] | None = None,
 ) -> InsightReportOutput:
     """Generate a single insight report for one analysis angle.
 
-    Uses generate_text (not streaming) for structured JSON output,
-    then broadcasts completion. Token-level streaming is complex with
-    JSON output so we broadcast progress events instead.
+    Two-step under the hood:
+      1. Stream markdown body live (``write_report_markdown``).
+      2. Extract structured metadata from the markdown
+         (``extract_report_metadata``).
+
+    Returns the same ``InsightReportOutput`` shape as before so existing
+    callers (pipeline persistence, scripts) are untouched.
     """
     from app.intelligence.insights.service import broadcast_log
 
-    model = model or get_model()
-    system = ANGLE_REPORT_SYSTEM.format(
-        angle_name=angle_name,
-        angle_description=angle_description,
-        type_hint=type_hint,
-        note_count=note_count,
-        date=date,
-    )
+    insights_model = model or get_insights_model()
 
     await broadcast_log(generation_id, {
         "type": "progress",
         "message": f"s{group_index} 正在生成报告: {angle_name}...",
     })
 
-    result = await _generate_text_result(
-        model=model,
-        system=system,
-        prompt=notes_content,
-        max_tokens=settings.AI_MAX_TOKENS,
-        temperature=settings.AI_TEMPERATURE,
+    write_result = await write_report_markdown(
+        angle_name=angle_name,
+        angle_description=angle_description,
+        type_hint=type_hint,
+        notes_content=notes_content,
+        generation_id=generation_id,
+        group_index=group_index,
+        model=insights_model,
     )
 
-    if not result.text:
-        raise RuntimeError(f"Report generation for '{angle_name}' returned empty")
-
-    logger.info(
-        "generate_report_for_angle[%s]: text_len=%d, usage=%s",
-        angle_name, len(result.text), result.usage,
+    extraction = await extract_report_metadata(
+        markdown=write_result.text,
+        angle_name=angle_name,
+        type_hint=type_hint,
+        note_index=note_index or [],
+        note_count=note_count,
+        date=date,
     )
 
-    return _parse_to_model(result.text, InsightReportOutput)
+    await broadcast_log(generation_id, {
+        "type": "decision",
+        "group": group_index,
+        "stage": "extraction_done",
+        "payload": {
+            "evidence_count": len(extraction.evidence_items),
+            "action_count": len(extraction.action_items),
+        },
+    })
+
+    return InsightReportOutput(
+        title=extraction.title,
+        description=extraction.description,
+        type=extraction.type,
+        report_markdown=write_result.text,
+        confidence=extraction.confidence,
+        importance_score=extraction.importance_score,
+        novelty_score=extraction.novelty_score,
+        evidence_items=extraction.evidence_items,
+        action_items=extraction.action_items,
+        share_card=extraction.share_card,
+    )

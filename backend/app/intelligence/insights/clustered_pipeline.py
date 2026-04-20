@@ -162,6 +162,13 @@ async def _generate_one_report(
         logger.warning("No notes available for angle '%s'", angle.angle_name)
         return None
 
+    # Compact id→title list grounds Step-2 evidence extraction.
+    note_index = [
+        (nid, note_map[nid].get("title") or nid)
+        for nid in angle.note_ids
+        if nid in note_map
+    ]
+
     last_error = None
     for attempt in range(1, max_retries + 1):
         try:
@@ -174,6 +181,7 @@ async def _generate_one_report(
                 date=date,
                 generation_id=generation_id,
                 group_index=group_index,
+                note_index=note_index,
             )
 
             await broadcast_log(generation_id, {
@@ -266,6 +274,22 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
         "message": f"发现 {len(clusters)} 个主题簇，共 {len(all_notes)} 条笔记",
     })
 
+    await broadcast_log(generation_id, {
+        "type": "decision",
+        "stage": "clusters_built",
+        "payload": {
+            "cluster_count": len(clusters),
+            "note_count": len(all_notes),
+            "clusters": [
+                {
+                    "size": len(c.note_ids),
+                    "keywords": list(getattr(c, "keywords", []) or [])[:5],
+                }
+                for c in clusters[:8]
+            ],
+        },
+    })
+
     # ── Phase 1b: Angle discovery ──
     num_angles = min(MAX_ANGLES, max(MIN_ANGLES, len(clusters)))
     cluster_summary = _build_cluster_summary(clusters, all_notes)
@@ -313,6 +337,25 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
             for a in angles
         ],
         "message": f"发现 {len(angles)} 个分析角度",
+    })
+
+    await broadcast_log(generation_id, {
+        "type": "decision",
+        "stage": "angles_picked",
+        "payload": {
+            "angles": [
+                {
+                    "angle_name": a.angle_name,
+                    "type_hint": a.type_hint,
+                    "note_titles": [
+                        (note_map[nid].get("title") or nid)[:40]
+                        for nid in a.note_ids[:5]
+                        if nid in note_map
+                    ],
+                }
+                for a in angles
+            ],
+        },
     })
 
     # Close the read-only DB transaction before long-running LLM calls so the

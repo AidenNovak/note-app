@@ -63,6 +63,25 @@ class InsightReportOutput(BaseModel):
     share_card: ShareCardOutput | None = None
 
 
+class InsightReportExtractionOutput(BaseModel):
+    """Step-2 extraction schema.
+
+    Markdown body comes from Step 1 (free-form streaming write); this
+    schema captures only the structured metadata the rest of the app
+    persists alongside it.
+    """
+
+    title: str
+    description: str
+    type: str = "report"
+    confidence: float = Field(ge=0.0, le=1.0, default=0.7)
+    importance_score: float = Field(ge=0.0, le=1.0, default=0.7)
+    novelty_score: float = Field(ge=0.0, le=1.0, default=0.5)
+    evidence_items: list[EvidenceItemOutput] = Field(default_factory=list)
+    action_items: list[ActionItemOutput] = Field(default_factory=list)
+    share_card: ShareCardOutput | None = None
+
+
 # ── Multi-Agent Grouping (s0 orchestrator output) ──────
 
 

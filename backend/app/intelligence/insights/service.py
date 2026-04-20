@@ -165,11 +165,14 @@ def unsubscribe_from_generation(generation_id: str, queue: asyncio.Queue) -> Non
 
 
 async def broadcast_log(generation_id: str, event: dict[str, object]) -> None:
-    # Buffer non-token events for late subscribers (tokens are too many to buffer)
-    if event.get("type") in ("completed", "error"):
+    # Buffer milestone events for late subscribers; skip high-frequency
+    # streaming deltas which would balloon the buffer.
+    event_type = event.get("type")
+    HIGH_FREQ = {"token", "thinking_delta", "markdown_delta"}
+    if event_type in ("completed", "error"):
         _terminal_events[generation_id] = event
         _event_buffers.pop(generation_id, None)
-    elif event.get("type") != "token":
+    elif event_type not in HIGH_FREQ:
         _event_buffers[generation_id].append(event)
     for queue in _log_queues.get(generation_id, []):
         await queue.put(event)
