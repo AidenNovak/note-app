@@ -161,9 +161,10 @@ def _extract_message_text(content: Any) -> str:
 
 def _resolve_openai_client(model: LanguageModel):
     client = getattr(model, "_client", None)
-    if client is None and hasattr(model, "chat"):
-        client = model
-    if client is None:
+    if client is None or not hasattr(client, "chat"):
+        if hasattr(model, "chat"):
+            client = model
+    if client is None or not hasattr(client, "chat"):
         raise RuntimeError("Model does not expose an OpenAI client")
     return client
 
