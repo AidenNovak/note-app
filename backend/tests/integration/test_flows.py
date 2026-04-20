@@ -145,8 +145,8 @@ class TestBillingFlow:
         status = await client.get("/api/v1/payments/status", headers=auth_headers)
         assert status.status_code == 200
         data = status.json()
-        assert data["current_entitlement"]["tier"] == "free"
-        assert data["has_active_subscription"] is False
+        assert data["currentEntitlement"]["tier"] == "free"
+        assert data["hasActiveSubscription"] is False
 
         # 2. Get available plans
         plans = await client.get("/api/v1/payments/plans")

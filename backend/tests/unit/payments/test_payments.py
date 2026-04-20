@@ -57,9 +57,9 @@ class TestBillingStatus:
         resp = await client.get("/api/v1/payments/status", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
-        assert data["current_entitlement"]["tier"] == "free"
-        assert data["has_active_subscription"] is False
-        assert data["billing_provider"] is None
+        assert data["currentEntitlement"]["tier"] == "free"
+        assert data["hasActiveSubscription"] is False
+        assert data["billingProvider"] is None
 
     async def test_monthly_subscriber(self, client: AsyncClient, test_user, auth_headers, db):
         sub = BillingSubscription(
@@ -79,10 +79,10 @@ class TestBillingStatus:
         resp = await client.get("/api/v1/payments/status", headers=auth_headers)
         assert resp.status_code == 200
         data = resp.json()
-        assert data["current_entitlement"]["tier"] == "monthly"
-        assert data["has_active_subscription"] is True
-        assert data["billing_provider"] == "stripe"
-        assert data["can_manage_billing"] is True
+        assert data["currentEntitlement"]["tier"] == "monthly"
+        assert data["hasActiveSubscription"] is True
+        assert data["billingProvider"] == "stripe"
+        assert data["canManageBilling"] is True
 
     async def test_yearly_subscriber(self, client: AsyncClient, test_user, auth_headers, db):
         sub = BillingSubscription(
@@ -101,7 +101,7 @@ class TestBillingStatus:
 
         resp = await client.get("/api/v1/payments/status", headers=auth_headers)
         data = resp.json()
-        assert data["current_entitlement"]["tier"] == "yearly"
+        assert data["currentEntitlement"]["tier"] == "yearly"
 
     async def test_lifetime_purchase(self, client: AsyncClient, test_user, auth_headers, db):
         purchase = BillingPurchase(
@@ -118,8 +118,8 @@ class TestBillingStatus:
 
         resp = await client.get("/api/v1/payments/status", headers=auth_headers)
         data = resp.json()
-        assert data["current_entitlement"]["tier"] == "lifetime"
-        assert data["current_entitlement"]["source"] == "lifetime"
+        assert data["currentEntitlement"]["tier"] == "lifetime"
+        assert data["currentEntitlement"]["source"] == "lifetime"
 
     async def test_lifetime_beats_subscription(self, client: AsyncClient, test_user, auth_headers, db):
         """Lifetime should outrank an active subscription."""
@@ -147,7 +147,7 @@ class TestBillingStatus:
         await db.commit()
 
         resp = await client.get("/api/v1/payments/status", headers=auth_headers)
-        assert resp.json()["current_entitlement"]["tier"] == "lifetime"
+        assert resp.json()["currentEntitlement"]["tier"] == "lifetime"
 
     async def test_cancelled_subscription(self, client: AsyncClient, test_user, auth_headers, db):
         sub = BillingSubscription(
@@ -166,8 +166,8 @@ class TestBillingStatus:
 
         resp = await client.get("/api/v1/payments/status", headers=auth_headers)
         data = resp.json()
-        assert data["current_entitlement"]["tier"] == "free"
-        assert data["has_active_subscription"] is False
+        assert data["currentEntitlement"]["tier"] == "free"
+        assert data["hasActiveSubscription"] is False
 
     async def test_trialing_counts_as_active(self, client: AsyncClient, test_user, auth_headers, db):
         sub = BillingSubscription(
@@ -186,8 +186,8 @@ class TestBillingStatus:
 
         resp = await client.get("/api/v1/payments/status", headers=auth_headers)
         data = resp.json()
-        assert data["current_entitlement"]["tier"] == "monthly"
-        assert data["has_active_subscription"] is True
+        assert data["currentEntitlement"]["tier"] == "monthly"
+        assert data["hasActiveSubscription"] is True
 
     async def test_unauthenticated(self, client: AsyncClient):
         resp = await client.get("/api/v1/payments/status")

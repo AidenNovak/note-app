@@ -9,7 +9,7 @@ from app.config import settings
 from app.database import get_db
 from app.models import User
 from app.auth.utils import get_current_user
-from app.payments.catalog import list_active_plans
+from app.payments.catalog import find_price_by_id, list_active_plans
 from app.payments.entitlements import get_billing_status
 from app.payments.service import (
     create_checkout_session,
@@ -33,19 +33,51 @@ async def billing_status(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Get the current user's billing status and entitlement."""
+    """Get the current user's billing status and entitlement.
+
+    Response shape is camelCase + nested objects to match the native client's
+    `ServerBillingStatusLike` contract (see
+    `easystarter/apps/native/hooks/use-native-payments.ts`). Snake_case
+    duplicates are intentionally NOT returned — keep this endpoint single-shape
+    so the native reconciliation logic stays correct.
+    """
     status = await get_billing_status(db, current_user.id)
+    entitlement = status.current_entitlement
+
+    active_price_obj = None
+    if status.active_price_id:
+        price = find_price_by_id(status.active_price_id)
+        if price:
+            active_price_obj = {
+                "id": price.id,
+                "currency": price.currency,
+                "amountCents": price.amount_cents,
+                "priceType": price.price_type,
+                "interval": price.interval,
+            }
+
+    active_plan_obj = (
+        {"id": status.active_plan_id} if status.active_plan_id else None
+    )
+
+    lifetime_purchase_obj = (
+        {"id": status.active_price_id}
+        if entitlement.source == "lifetime" and status.active_price_id
+        else None
+    )
+
     return {
-        "user_id": status.user_id,
-        "billing_provider": status.billing_provider,
-        "can_manage_billing": status.can_manage_billing,
-        "current_entitlement": {
-            "tier": status.current_entitlement.tier,
-            "source": status.current_entitlement.source,
+        "userId": status.user_id,
+        "billingProvider": status.billing_provider,
+        "canManageBilling": status.can_manage_billing,
+        "currentEntitlement": {
+            "tier": entitlement.tier,
+            "source": entitlement.source,
         },
-        "has_active_subscription": status.has_active_subscription,
-        "active_plan_id": status.active_plan_id,
-        "active_price_id": status.active_price_id,
+        "hasActiveSubscription": status.has_active_subscription,
+        "activePlan": active_plan_obj,
+        "activePrice": active_price_obj,
+        "lifetimePurchase": lifetime_purchase_obj,
     }
 
 
