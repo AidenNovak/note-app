@@ -115,13 +115,25 @@ class InsightAgent:
     # ── Lifecycle hooks ──
 
     async def on_start(self) -> None:
-        """Called when the agent begins work. Restores workspace from DB if resuming."""
+        """Called when the agent begins work. Restores workspace from DB if resuming.
+
+        If the agent is being resumed (state != IDLE), we keep the existing state
+        and only broadcast a resume event instead of restarting.
+        """
         await self._restore_workspace()
-        await self.transition_to(AgentState.DISCOVERING)
-        await self.broadcast({
-            "type": "starting",
-            "message": "Insight Agent 启动...",
-        })
+        if self.state == AgentState.IDLE:
+            await self.transition_to(AgentState.DISCOVERING)
+            await self.broadcast({
+                "type": "starting",
+                "message": "Insight Agent 启动...",
+            })
+        else:
+            await self.broadcast({
+                "type": "resuming",
+                "message": f"Insight Agent 恢复（{self.state.value}）...",
+                "state": self.state.value,
+                "current_angle_index": self.workspace.get("_current_angle_index", 0),
+            })
 
     async def on_finish(self, status: TaskStatus = TaskStatus.COMPLETED, summary: str = "") -> None:
         """Called when the agent completes or fails."""

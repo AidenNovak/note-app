@@ -165,7 +165,7 @@ async def get_report(db: AsyncSession, user_id: str, report_id: str) -> InsightR
         .options(
             selectinload(InsightReport.evidence_items),
             selectinload(InsightReport.action_items),
-
+            selectinload(InsightReport.generation),
         )
         .where(
             InsightReport.user_id == user_id,
