@@ -25,7 +25,6 @@ from app.intelligence.insights.serializers import (
 )
 from app.models import (
     InsightGeneration,
-    InsightGenerationLog,
     InsightReport,
     TaskStatus,
 )
@@ -65,7 +64,6 @@ _log_queues: dict[str, list[asyncio.Queue]] = defaultdict(list)
 _event_buffers: dict[str, list[dict[str, object]]] = defaultdict(list)
 _terminal_events: dict[str, dict[str, object]] = {}
 _delta_snapshots: dict[str, dict[tuple[str, int], str]] = defaultdict(dict)
-_timeline_buffers: dict[str, list[dict[str, object]]] = defaultdict(list)
 HIGH_FREQ_EVENT_TYPES = {"token", "thinking_delta", "markdown_delta"}
 
 
@@ -77,10 +75,6 @@ async def get_latest_generation(db: AsyncSession, user_id: str) -> InsightGenera
 
     result = await db.execute(
         select(InsightGeneration)
-        .options(
-            selectinload(InsightGeneration.agent_runs),
-            selectinload(InsightGeneration.logs),
-        )
         .where(InsightGeneration.user_id == user_id)
         .order_by(InsightGeneration.created_at.desc())
         .limit(1)
@@ -93,10 +87,6 @@ async def get_active_generation(db: AsyncSession, user_id: str) -> InsightGenera
 
     result = await db.execute(
         select(InsightGeneration)
-        .options(
-            selectinload(InsightGeneration.agent_runs),
-            selectinload(InsightGeneration.logs),
-        )
         .where(
             InsightGeneration.user_id == user_id,
             InsightGeneration.status.in_([TaskStatus.PENDING, TaskStatus.PROCESSING]),
@@ -175,8 +165,7 @@ async def get_report(db: AsyncSession, user_id: str, report_id: str) -> InsightR
         .options(
             selectinload(InsightReport.evidence_items),
             selectinload(InsightReport.action_items),
-            selectinload(InsightReport.generation).selectinload(InsightGeneration.agent_runs),
-            selectinload(InsightReport.generation).selectinload(InsightGeneration.logs),
+
         )
         .where(
             InsightReport.user_id == user_id,
@@ -191,32 +180,6 @@ async def get_report(db: AsyncSession, user_id: str, report_id: str) -> InsightR
 
 def _sanitize_event_payload(event: dict[str, object]) -> dict[str, object]:
     return json.loads(json.dumps(event, ensure_ascii=False, default=str))
-
-
-def _timeline_message(event: dict[str, object]) -> str | None:
-    for key in ("message", "summary", "error", "description"):
-        value = event.get(key)
-        if isinstance(value, str) and value.strip():
-            return value
-    return None
-
-
-def _buffer_timeline_event(generation_id: str, event: dict[str, object]) -> None:
-    event_type = event.get("type")
-    if not isinstance(event_type, str) or event_type in HIGH_FREQ_EVENT_TYPES:
-        return
-    group = event.get("group")
-    stage = event.get("stage")
-    _timeline_buffers[generation_id].append(
-        {
-            "created_at": datetime.now(timezone.utc),
-            "event_type": event_type,
-            "stage": stage if isinstance(stage, str) else None,
-            "group_index": group if isinstance(group, int) else None,
-            "message": _timeline_message(event),
-            "payload_json": json.dumps(_sanitize_event_payload(event), ensure_ascii=False),
-        }
-    )
 
 
 def _update_delta_snapshots(generation_id: str, event: dict[str, object]) -> None:
@@ -240,8 +203,6 @@ async def broadcast_log(generation_id: str, event: dict[str, object]) -> None:
 
     # ── Legacy in-memory updates ──
     _update_delta_snapshots(generation_id, event)
-    if event_type not in HIGH_FREQ_EVENT_TYPES:
-        _buffer_timeline_event(generation_id, event)
     if event_type in ("completed", "error"):
         _terminal_events[generation_id] = event
         _event_buffers.pop(generation_id, None)
@@ -331,9 +292,6 @@ def unsubscribe_from_generation(generation_id: str, queue: asyncio.Queue) -> Non
         del _log_queues[generation_id]
 
 
-# ── Generation log persistence (legacy, kept for backward compat) ──
-
-
 def build_terminal_event(generation: InsightGeneration) -> dict[str, object] | None:
     if generation.status == TaskStatus.COMPLETED:
         return {
@@ -348,85 +306,11 @@ def build_terminal_event(generation: InsightGeneration) -> dict[str, object] | N
     return None
 
 
-def _build_snapshot_timeline_events(generation_id: str) -> list[dict[str, object]]:
-    snapshots = _delta_snapshots.get(generation_id, {})
-    if not snapshots:
-        return []
-    completed_groups = {
-        item.get("group_index")
-        for item in _timeline_buffers.get(generation_id, [])
-        if item.get("event_type") == "group_completed"
-    }
-    events: list[dict[str, object]] = []
-    for group in sorted({group for (_, group) in snapshots.keys()}):
-        if group in completed_groups:
-            continue
-        thinking = snapshots.get(("thinking_delta", group), "")
-        markdown = snapshots.get(("markdown_delta", group), "")
-        if not thinking and not markdown:
-            continue
-        payload = {
-            "type": "group_snapshot",
-            "group": group,
-            "thinking_trace": thinking,
-            "report_markdown": markdown,
-        }
-        events.append(
-            {
-                "created_at": datetime.now(timezone.utc),
-                "event_type": "group_snapshot",
-                "stage": None,
-                "group_index": group,
-                "message": "Latest streamed snapshot before completion.",
-                "payload_json": json.dumps(payload, ensure_ascii=False),
-            }
-        )
-    return events
-
-
-async def persist_generation_logs(
-    db: AsyncSession,
-    generation_id: str,
-    *,
-    terminal_event: dict[str, object] | None = None,
-) -> None:
-    """Persist timeline logs to ``insight_generation_logs`` (legacy table).
-
-    In Phase 1 this is kept for backward compatibility; new code should prefer
-    the ``insight_events`` table which is append-only and supports replay.
-    """
-    if terminal_event is not None:
-        _buffer_timeline_event(generation_id, terminal_event)
-
-    buffered = list(_timeline_buffers.get(generation_id, []))
-    buffered.extend(_build_snapshot_timeline_events(generation_id))
-    if not buffered:
-        return
-
-    await db.execute(delete(InsightGenerationLog).where(InsightGenerationLog.generation_id == generation_id))
-    buffered.sort(key=lambda item: item["created_at"])
-    for index, item in enumerate(buffered, start=1):
-        db.add(
-            InsightGenerationLog(
-                id=str(uuid.uuid4()),
-                generation_id=generation_id,
-                event_index=index,
-                event_type=str(item["event_type"]),
-                stage=item.get("stage"),
-                group_index=item.get("group_index"),
-                message=item.get("message"),
-                payload_json=str(item["payload_json"]),
-                created_at=item["created_at"],
-            )
-        )
-
-
 def clear_generation_buffers(generation_id: str) -> None:
     """Clear all in-memory buffers for a generation."""
     _event_buffers.pop(generation_id, None)
     _terminal_events.pop(generation_id, None)
     _delta_snapshots.pop(generation_id, None)
-    _timeline_buffers.pop(generation_id, None)
     # Also clear the DB event store buffers
     try:
         from app.intelligence.insights.event_store import clear_buffers as _clear_db_buffers

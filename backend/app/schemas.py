@@ -484,35 +484,6 @@ class InsightShareCardOut(BaseModel):
     footer: str
 
 
-class InsightAgentRunOut(BaseModel):
-    id: str
-    agent_name: str
-    stage: str
-    status: str
-    session_id: str | None = None
-    model_name: str | None = None
-    duration_ms: int | None = None
-    api_duration_ms: int | None = None
-    total_cost_usd: float | None = None
-    input_tokens: int | None = None
-    output_tokens: int | None = None
-    summary: str | None = None
-    error: str | None = None
-    started_at: datetime
-    completed_at: datetime | None = None
-
-
-class InsightGenerationLogOut(BaseModel):
-    id: str
-    event_index: int
-    event_type: str
-    stage: str | None = None
-    group_index: int | None = None
-    message: str | None = None
-    payload: dict[str, Any] | None = None
-    created_at: datetime
-
-
 class InsightGenerationOut(BaseModel):
     id: str
     status: str
@@ -524,13 +495,6 @@ class InsightGenerationOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
-    total_duration_ms: int = 0
-    total_api_duration_ms: int = 0
-    total_cost_usd: float = 0.0
-    input_tokens: int = 0
-    output_tokens: int = 0
-    agent_runs: list[InsightAgentRunOut] = Field(default_factory=list)
-    logs: list[InsightGenerationLogOut] = Field(default_factory=list)
 
 
 class InsightDetailOut(InsightOut):

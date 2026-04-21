@@ -35,7 +35,7 @@ from app.intelligence.insights.event_store import (
 )
 from app.intelligence.insights.tools import ALL_TOOLS
 from app.intelligence.insights.tools.base import Tool, ToolContext, ToolResult
-from app.models import InsightAgentRun, InsightGeneration, TaskStatus
+from app.models import InsightGeneration, TaskStatus
 
 logger = logging.getLogger(__name__)
 
@@ -439,35 +439,7 @@ class InsightAgent:
             )
             logger.exception("Tool %s failed: %s", tool.name, exc)
 
-        # Record AgentRun telemetry
-        await self._record_agent_run(tool.name, result)
         return result
-
-    async def _record_agent_run(self, tool_name: str, result: ToolResult) -> None:
-        """Persist tool execution telemetry to InsightAgentRun."""
-        try:
-            self.db.add(
-                InsightAgentRun(
-                    id=str(uuid.uuid4()),
-                    generation_id=self.generation_id,
-                    agent_name=tool_name,
-                    stage=self.state.value,
-                    status="completed" if result.success else "failed",
-                    model_name=None,
-                    duration_ms=result.duration_ms,
-                    api_duration_ms=result.duration_ms,
-                    total_cost_usd=result.total_cost_usd,
-                    input_tokens=result.input_tokens,
-                    output_tokens=result.output_tokens,
-                    summary=result.error[:200] if result.error else None,
-                    started_at=datetime.now(timezone.utc),
-                    completed_at=datetime.now(timezone.utc),
-                )
-            )
-            await self.db.commit()
-        except Exception as exc:
-            logger.warning("Failed to record agent run: %s", exc)
-            await self.db.rollback()
 
     # ── Pipeline mode (default, behaviour-identical to clustered-v1) ──
 

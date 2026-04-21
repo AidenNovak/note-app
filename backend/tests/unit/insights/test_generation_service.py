@@ -10,12 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.intelligence.insights.service import (
     build_terminal_event,
     broadcast_log,
-    persist_generation_logs,
     create_generation,
     subscribe_to_generation,
     unsubscribe_from_generation,
 )
-from app.models import InsightGeneration, InsightGenerationLog, TaskStatus
+from app.models import InsightGeneration, TaskStatus
 
 
 pytestmark = pytest.mark.asyncio
@@ -132,27 +131,3 @@ class TestGenerationStreaming:
         finally:
             if queue is not None:
                 unsubscribe_from_generation(generation_id, queue)
-
-    async def test_persist_generation_logs_writes_buffered_events(self, db: AsyncSession, test_user):
-        generation = await _create_generation(
-            db,
-            test_user.id,
-            status=TaskStatus.PROCESSING,
-            created_at=datetime.now(timezone.utc),
-        )
-
-        await broadcast_log(generation.id, {"type": "starting", "message": "starting"})
-        await broadcast_log(generation.id, {"type": "decision", "stage": "clusters_built", "payload": {"cluster_count": 3}})
-        await persist_generation_logs(db, generation.id, terminal_event={"type": "completed", "summary": "done"})
-        await db.commit()
-
-        result = await db.execute(
-            select(InsightGenerationLog)
-            .where(InsightGenerationLog.generation_id == generation.id)
-            .order_by(InsightGenerationLog.event_index.asc())
-        )
-        logs = result.scalars().all()
-
-        assert [log.event_type for log in logs] == ["starting", "decision", "completed"]
-        assert logs[1].stage == "clusters_built"
-        assert '"cluster_count": 3' in logs[1].payload_json

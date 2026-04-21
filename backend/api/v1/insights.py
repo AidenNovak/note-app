@@ -25,7 +25,6 @@ from app.intelligence.insights.service import (
     clear_generation_buffers,
     create_generation,
     get_latest_generation,
-    persist_generation_logs,
     get_report,
     list_reports,
     serialize_generation,
@@ -201,9 +200,7 @@ async def _background_generate_clustered(generation_id: str) -> None:
                     generation.completed_at = datetime.now(timezone.utc)
                     await err_db.commit()
                     error_event = {"type": "error", "message": str(exc)[:300]}
-                    await persist_generation_logs(err_db, generation_id, terminal_event=error_event)
-                    await err_db.commit()
-            await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
+                    await broadcast_log(generation_id, error_event)
             clear_generation_buffers(generation_id)
 
 

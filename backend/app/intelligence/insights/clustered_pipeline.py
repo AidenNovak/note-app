@@ -31,7 +31,7 @@ from app.intelligence.insights.graph_clustering import (
 )
 from app.intelligence.insights.llm import discover_angles
 from app.intelligence.insights.schemas_ai import AngleOutput, InsightReportOutput
-from app.intelligence.insights.service import broadcast_log, clear_generation_buffers, persist_generation_logs
+from app.intelligence.insights.service import broadcast_log, clear_generation_buffers
 from app.models import (
     InsightActionItem,
     InsightEvidenceItem,
@@ -384,7 +384,5 @@ async def _persist_clustered_reports(
         "type": "completed",
         "summary": generation.summary,
     }
-    await persist_generation_logs(db, generation_id, terminal_event=completed_event)
-    await db.commit()
     await broadcast_log(generation_id, completed_event)
     clear_generation_buffers(generation_id)

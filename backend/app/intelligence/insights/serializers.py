@@ -7,52 +7,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.intelligence.insights.share_cards import build_share_card_model, extract_share_card_payload
-from app.models import InsightAgentRun, InsightGeneration, InsightGenerationLog, InsightReport, Note
+from app.models import InsightGeneration, InsightReport, Note
 from app.schemas import (
     InsightActionItemOut,
-    InsightAgentRunOut,
     InsightDetailOut,
     InsightEvidenceItemOut,
     InsightGenerationOut,
-    InsightGenerationLogOut,
     InsightOut,
     InsightSourceNoteOut,
 )
 
 
-def _aggregate_generation_metrics(runs: list[InsightAgentRun]) -> dict[str, float | int]:
-    return {
-        "total_duration_ms": sum(run.duration_ms or 0 for run in runs),
-        "total_api_duration_ms": sum(run.api_duration_ms or 0 for run in runs),
-        "total_cost_usd": round(sum(run.total_cost_usd or 0.0 for run in runs), 6),
-        "input_tokens": sum(run.input_tokens or 0 for run in runs),
-        "output_tokens": sum(run.output_tokens or 0 for run in runs),
-    }
-
-
-def serialize_generation_log(log: InsightGenerationLog) -> InsightGenerationLogOut:
-    try:
-        payload = json.loads(log.payload_json or "{}")
-    except json.JSONDecodeError:
-        payload = None
-    return InsightGenerationLogOut(
-        id=log.id,
-        event_index=log.event_index,
-        event_type=log.event_type,
-        stage=log.stage,
-        group_index=log.group_index,
-        message=log.message,
-        payload=payload if isinstance(payload, dict) else None,
-        created_at=log.created_at,
-    )
-
-
 def serialize_generation(generation: InsightGeneration) -> InsightGenerationOut:
-    runs = generation.__dict__.get("agent_runs") or []
-    runs = sorted(runs, key=lambda item: item.started_at)
-    logs = generation.__dict__.get("logs") or []
-    logs = sorted(logs, key=lambda item: (item.event_index, item.created_at))
-    totals = _aggregate_generation_metrics(runs)
     return InsightGenerationOut(
         id=generation.id,
         status=generation.status.value,
@@ -64,32 +30,6 @@ def serialize_generation(generation: InsightGeneration) -> InsightGenerationOut:
         created_at=generation.created_at,
         updated_at=generation.updated_at,
         completed_at=generation.completed_at,
-        total_duration_ms=int(totals["total_duration_ms"]),
-        total_api_duration_ms=int(totals["total_api_duration_ms"]),
-        total_cost_usd=float(totals["total_cost_usd"]),
-        input_tokens=int(totals["input_tokens"]),
-        output_tokens=int(totals["output_tokens"]),
-        agent_runs=[
-            InsightAgentRunOut(
-                id=run.id,
-                agent_name=run.agent_name,
-                stage=run.stage,
-                status=run.status,
-                session_id=run.session_id,
-                model_name=run.model_name,
-                duration_ms=run.duration_ms,
-                api_duration_ms=run.api_duration_ms,
-                total_cost_usd=run.total_cost_usd,
-                input_tokens=run.input_tokens,
-                output_tokens=run.output_tokens,
-                summary=run.summary,
-                error=run.error,
-                started_at=run.started_at,
-                completed_at=run.completed_at,
-            )
-            for run in runs
-        ],
-        logs=[serialize_generation_log(log) for log in logs],
     )
 
 
