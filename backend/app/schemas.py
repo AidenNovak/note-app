@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -501,6 +502,17 @@ class InsightAgentRunOut(BaseModel):
     completed_at: datetime | None = None
 
 
+class InsightGenerationLogOut(BaseModel):
+    id: str
+    event_index: int
+    event_type: str
+    stage: str | None = None
+    group_index: int | None = None
+    message: str | None = None
+    payload: dict[str, Any] | None = None
+    created_at: datetime
+
+
 class InsightGenerationOut(BaseModel):
     id: str
     status: str
@@ -518,10 +530,12 @@ class InsightGenerationOut(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
     agent_runs: list[InsightAgentRunOut] = Field(default_factory=list)
+    logs: list[InsightGenerationLogOut] = Field(default_factory=list)
 
 
 class InsightDetailOut(InsightOut):
     report_markdown: str
+    thinking_trace: str | None = None
     review_summary: str | None = None
     source_notes: list[InsightSourceNoteOut]
     evidence_items: list[InsightEvidenceItemOut]

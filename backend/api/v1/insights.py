@@ -22,8 +22,10 @@ from app.intelligence.insights.service import (
     build_terminal_event,
     build_report_detail,
     broadcast_log,
+    clear_generation_buffers,
     create_generation,
     get_latest_generation,
+    persist_generation_logs,
     get_report,
     list_reports,
     serialize_generation,
@@ -40,10 +42,16 @@ STREAM_STATUS_POLL_INTERVAL_SECONDS = 2.0
 @router.get("/generations/{generation_id}/stream")
 async def stream_generation_logs(
     generation_id: str,
+    last_sequence: int = Query(0, ge=0, description="Resume streaming from this sequence number"),
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Stream real-time logs of a specific insight generation."""
+    """Stream real-time logs of a specific insight generation.
+
+    Supports resumable streaming via ``last_sequence`` — if the client
+    disconnects and reconnects, pass the last received sequence to resume
+    without missing events.
+    """
     # Verify generation belongs to user
     result = await db.execute(
         select(InsightGeneration).where(
@@ -61,7 +69,7 @@ async def stream_generation_logs(
             yield f"data: {json.dumps(terminal_event)}\n\n"
             return
 
-        queue = subscribe_to_generation(generation_id)
+        queue = await subscribe_to_generation(generation_id, db=db, after_sequence=last_sequence)
         try:
             while True:
                 try:
@@ -192,7 +200,11 @@ async def _background_generate_clustered(generation_id: str) -> None:
                     generation.is_active = False
                     generation.completed_at = datetime.now(timezone.utc)
                     await err_db.commit()
+                    error_event = {"type": "error", "message": str(exc)[:300]}
+                    await persist_generation_logs(err_db, generation_id, terminal_event=error_event)
+                    await err_db.commit()
             await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
+            clear_generation_buffers(generation_id)
 
 
 @router.post("/generate/clustered", response_model=InsightGenerationOut, status_code=status.HTTP_202_ACCEPTED)
@@ -205,6 +217,104 @@ async def generate_insights_clustered(
     if created:
         asyncio.create_task(_background_generate_clustered(generation.id))
     return serialize_generation(generation)
+
+
+# ── Chat & Regenerate endpoints (Phase 3) ──────────────────────
+
+
+class ChatRequest(BaseModel):
+    message: str = Field(min_length=1, max_length=2000, description="用户消息")
+
+
+class RegenerateRequest(BaseModel):
+    angle_index: int = Field(ge=0, description="要重新生成的角度索引（0-based）")
+    instruction: str | None = Field(default=None, max_length=1000, description="额外的生成指导")
+
+
+@router.post("/generations/{generation_id}/chat", response_model=StatusResponse)
+async def chat_with_insight_agent(
+    generation_id: str,
+    body: ChatRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Send a follow-up message to the insight agent.
+
+    The agent processes the message asynchronously and broadcasts response
+    events to the SSE stream. Clients should listen to the stream endpoint
+    to receive replies.
+    """
+    result = await db.execute(
+        select(InsightGeneration).where(
+            InsightGeneration.id == generation_id,
+            InsightGeneration.user_id == current_user.id,
+        )
+    )
+    generation = result.scalar_one_or_none()
+    if generation is None:
+        raise HTTPException(status_code=404, detail={"error": {"code": "GENERATION_NOT_FOUND", "message": "Generation not found"}})
+
+    if generation.status != TaskStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": {"code": "AGENT_NOT_READY", "message": "报告尚未生成完成，无法交互。"}},
+        )
+
+    from app.intelligence.insights.agent import InsightAgent
+
+    agent = InsightAgent(generation_id, current_user.id, db, mode="pipeline")
+    await agent.on_chat_message(body.message)
+
+    return {"status": "ok"}
+
+
+@router.post("/generations/{generation_id}/regenerate", response_model=StatusResponse)
+async def regenerate_insight_angle(
+    generation_id: str,
+    body: RegenerateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Regenerate a specific angle report with an optional instruction."""
+    result = await db.execute(
+        select(InsightGeneration).where(
+            InsightGeneration.id == generation_id,
+            InsightGeneration.user_id == current_user.id,
+        )
+    )
+    generation = result.scalar_one_or_none()
+    if generation is None:
+        raise HTTPException(status_code=404, detail={"error": {"code": "GENERATION_NOT_FOUND", "message": "Generation not found"}})
+
+    if generation.status != TaskStatus.COMPLETED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": {"code": "AGENT_NOT_READY", "message": "报告尚未生成完成，无法重新生成。"}},
+        )
+
+    from app.intelligence.insights.agent import InsightAgent
+
+    agent = InsightAgent(generation_id, current_user.id, db, mode="pipeline")
+
+    # Restore workspace
+    reports = agent.workspace.get("reports", [])
+    if body.angle_index >= len(reports):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": {"code": "INVALID_ANGLE", "message": "角度索引超出范围。"}},
+        )
+
+    report_data = reports[body.angle_index]
+    report = report_data.get("report", {})
+    note_ids = report_data.get("note_ids", [])
+
+    # Build a synthetic "deepen" message
+    instruction = body.instruction or "请重新分析这个角度，给出更深入或不同视角的洞察。"
+    message = f"深化第 {body.angle_index + 1} 个角度：{report.get('title', '')}。{instruction}"
+
+    await agent.on_chat_message(message)
+
+    return {"status": "ok"}
 
 
 # ── Export endpoints ──────────────────────

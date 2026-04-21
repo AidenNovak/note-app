@@ -1,7 +1,8 @@
 # Deployment & Release
 
-This doc is the playbook for shipping new backend versions to Railway and
-publishing new `atelier-note` versions to npm.
+This doc is the playbook for shipping new **Truth Truth (T²)** backend versions
+to Railway and publishing new `atelier-note` (CLI) versions to npm. The npm
+package keeps the legacy slug for backward compatibility.
 
 ## Backend (Railway)
 

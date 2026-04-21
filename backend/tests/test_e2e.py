@@ -1,4 +1,4 @@
-"""End-to-end test suite for Atelier API — tests full user flows."""
+"""End-to-end test suite for Truth Truth API — tests full user flows."""
 import json
 import os
 import time
@@ -98,7 +98,7 @@ def test_1_health():
     r = requests.get(f"{BASE}/")
     assert r.status_code == 200
     data = r.json()
-    assert data["name"] == "atelier API"
+    assert data["name"] == "Truth Truth API"
     print("  ✅ Health check passed")
 
 
@@ -318,7 +318,7 @@ def test_20_auth_me():
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("  Atelier End-to-End Test Suite")
+    print("  Truth Truth End-to-End Test Suite")
     print("=" * 60)
 
     tests = [

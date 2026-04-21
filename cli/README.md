@@ -1,8 +1,12 @@
-# atelier-note
+# atelier-note (Truth Truth · T² CLI)
 
-A command-line interface for [atélier](https://jilly.app) — your second digital
-mind, scriptable from the terminal. Designed for AI-native workflows (pipe into
-LLMs, cron jobs, scripts, automation).
+A command-line interface for [Truth Truth](https://jilly.app) — your second
+digital mind, scriptable from the terminal. Designed for AI-native workflows
+(pipe into LLMs, cron jobs, scripts, automation).
+
+> Brand: **Truth Truth · Truth, twice.** The npm package, bin name, env vars
+> (`ATELIER_API_URL`, `ATELIER_TOKEN`), and config directory all keep the
+> legacy `atelier` slug so existing users' workflows don't break.
 
 ## Install
 

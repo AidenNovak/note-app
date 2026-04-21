@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING, Sequence
 
 from app.intelligence.ai import get_provider
 from app.intelligence.ai.prompts import NOTE_METADATA_PROMPT, NOTE_REWRITE_PROMPT
+from app.intelligence.ai.response_schemas import (
+    NOTE_METADATA_RESPONSE_FORMAT,
+    NOTE_REWRITE_RESPONSE_FORMAT,
+)
 from app.models import MetadataSource
 
 if TYPE_CHECKING:
@@ -229,6 +233,7 @@ async def _generate_metadata(
             NOTE_METADATA_PROMPT,
             json.dumps(user_msg, ensure_ascii=False),
             profile="note_metadata",
+            response_format=NOTE_METADATA_RESPONSE_FORMAT,
         )
     )
 
@@ -338,6 +343,7 @@ async def generate_ai_note_version(
                 ensure_ascii=False,
             ),
             profile="note_rewrite",
+            response_format=NOTE_REWRITE_RESPONSE_FORMAT,
         )
     )
 

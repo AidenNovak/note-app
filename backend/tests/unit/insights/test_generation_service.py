@@ -10,11 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.intelligence.insights.service import (
     build_terminal_event,
     broadcast_log,
+    persist_generation_logs,
     create_generation,
     subscribe_to_generation,
     unsubscribe_from_generation,
 )
-from app.models import InsightGeneration, TaskStatus
+from app.models import InsightGeneration, InsightGenerationLog, TaskStatus
 
 
 pytestmark = pytest.mark.asyncio
@@ -98,9 +99,60 @@ class TestGenerationStreaming:
 
         try:
             await broadcast_log(generation_id, {"type": "error", "message": "boom"})
-            queue = subscribe_to_generation(generation_id)
+            queue = await subscribe_to_generation(generation_id)
 
             assert queue.get_nowait() == {"type": "error", "message": "boom"}
         finally:
             if queue is not None:
                 unsubscribe_from_generation(generation_id, queue)
+
+    async def test_subscribe_replays_stream_snapshots_for_late_listener(self):
+        generation_id = str(uuid.uuid4())
+        queue = None
+
+        try:
+            await broadcast_log(generation_id, {"type": "group_started", "group": 1, "theme": "Theme"})
+            await broadcast_log(generation_id, {"type": "thinking_delta", "group": 1, "text": "alpha"})
+            await broadcast_log(generation_id, {"type": "markdown_delta", "group": 1, "text": "beta"})
+            queue = await subscribe_to_generation(generation_id)
+
+            assert queue.get_nowait() == {"type": "group_started", "group": 1, "theme": "Theme"}
+            assert queue.get_nowait() == {
+                "type": "thinking_delta",
+                "group": 1,
+                "text": "alpha",
+                "snapshot": True,
+            }
+            assert queue.get_nowait() == {
+                "type": "markdown_delta",
+                "group": 1,
+                "text": "beta",
+                "snapshot": True,
+            }
+        finally:
+            if queue is not None:
+                unsubscribe_from_generation(generation_id, queue)
+
+    async def test_persist_generation_logs_writes_buffered_events(self, db: AsyncSession, test_user):
+        generation = await _create_generation(
+            db,
+            test_user.id,
+            status=TaskStatus.PROCESSING,
+            created_at=datetime.now(timezone.utc),
+        )
+
+        await broadcast_log(generation.id, {"type": "starting", "message": "starting"})
+        await broadcast_log(generation.id, {"type": "decision", "stage": "clusters_built", "payload": {"cluster_count": 3}})
+        await persist_generation_logs(db, generation.id, terminal_event={"type": "completed", "summary": "done"})
+        await db.commit()
+
+        result = await db.execute(
+            select(InsightGenerationLog)
+            .where(InsightGenerationLog.generation_id == generation.id)
+            .order_by(InsightGenerationLog.event_index.asc())
+        )
+        logs = result.scalars().all()
+
+        assert [log.event_type for log in logs] == ["starting", "decision", "completed"]
+        assert logs[1].stage == "clusters_built"
+        assert '"cluster_count": 3' in logs[1].payload_json

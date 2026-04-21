@@ -1,13 +1,20 @@
-# atélier — Your Second Digital Mind
+# Truth Truth (T²) — Truth, twice.
 
 Native-first note app: Expo iOS client + FastAPI backend.
+
+> The brand is **Truth Truth** (formerly _atélier_). Some technical identifiers
+> (`app.jilly.atelier` bundle ID, `atelier-note` npm CLI, `atelier-bucket` R2
+> bucket, `atelier_pro_*` IAP product IDs) keep the legacy slug — changing them
+> would break Apple/RevenueCat/storage. Anything user-facing has been rebranded.
 
 ## Architecture
 
 ```text
 note-app/
+├── _local/           Local-only screenshots, exports, and archive (gitignored)
 ├── backend/          FastAPI backend (Railway: backend.jilly.app)
 ├── cli/              `atelier` command-line client (TypeScript)
+├── docs/             Workspace-level docs and runbooks
 ├── easystarter/      Native workspace (separate git repo)
 │   ├── apps/native/  Expo 55 + React Native 0.83 app
 │   └── packages/     Shared packages used by native
@@ -63,6 +70,19 @@ atelier note add "hello from the terminal"
 ```
 
 See [`cli/README.md`](cli/README.md) for full usage.
+
+## Documentation
+
+- [`docs/repository-layout.md`](docs/repository-layout.md): where code, docs, and local artifacts belong
+- [`docs/local-development.md`](docs/local-development.md): local startup, connectivity checks, and validation flow
+- [`design-docs/`](design-docs/): product and design materials
+
+## Workspace conventions
+
+- Keep product code inside its owning project (`backend/`, `easystarter/`, `cli/`, `jilly/`).
+- Keep workspace-level operational docs in `docs/`.
+- Keep local screenshots, exports, and throwaway artifacts under `_local/` only.
+- Avoid adding new root-level Markdown files unless they are true entrypoints like `README.md`.
 
 ## Environment variables
 

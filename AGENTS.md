@@ -1,8 +1,10 @@
-# Note App (atélier) — Agent Notes
+# Note App (Truth Truth · T²) — Agent Notes
 
 ## 产品
 
-**atélier** — "Your Second Digital Mind"，四模块：Inbox / Mind / Insight / Ground。
+**Truth Truth (T²)** — "Truth, twice." / "Capture once. See it twice." 四模块：Inbox / Mind / Insight / Ground。
+
+> 历史名 "atélier" 仍保留在技术接口中（bundle ID `app.jilly.atelier`、R2 bucket `atelier-bucket`、IAP product IDs `atelier_pro_*`、CLI bin/env `atelier*`、storage key `atelier_token`、CSS class `.atelier-landing`、demo 邮箱 `demo@atelier.dev`）— 改这些会破坏现有用户/账单/部署，**不要改**。所有用户可见文案统一用 Truth Truth。
 
 ## 架构（Native-Only）
 
@@ -39,4 +41,4 @@
 - **用途**: iOS 模拟器自动登录与云端开发测试
 - **配置位置**: `easystarter/apps/native/components/auth/sign-in-form.tsx`
 - **数据库**: 云端 Supabase 生产数据库已同步该账号密码，user ID 为 `58cca1fa-47b3-4e0e-ba53-3605db9d4ec6`
-- **备用账号**: `demo@atelier.dev` / `Demo1234!`（user ID `d00ce7f9-5faa-4232-a2c2-ccc1cd443382`）
+- **备用账号**: `demo@atelier.dev` / `Demo1234!`（user ID `d00ce7f9-5faa-4232-a2c2-ccc1cd443382`，邮箱地址保留旧域名）

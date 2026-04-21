@@ -43,7 +43,7 @@ async def send_email(*, to: str, subject: str, html: str) -> bool:
 def render_verification_email(*, name: str, code: str, locale: str = "en") -> tuple[str, str]:
     """Return (subject, html) for email verification."""
     if locale.startswith("zh"):
-        subject = f"验证你的 atélier 账号"
+        subject = f"验证你的 Truth Truth 账号"
         html = f"""
         <div style="font-family: Inter, sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 20px;">
             <h1 style="color: #2d5a3d; font-size: 24px;">你好, {name} 👋</h1>
@@ -53,10 +53,10 @@ def render_verification_email(*, name: str, code: str, locale: str = "en") -> tu
             </div>
             <p style="color: #666;">验证码 15 分钟内有效。如果不是你本人操作，请忽略此邮件。</p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 32px 0;">
-            <p style="color: #999; font-size: 12px;">atélier — Your Second Digital Mind</p>
+            <p style="color: #999; font-size: 12px;">Truth Truth · Truth, twice.</p>
         </div>"""
     else:
-        subject = f"Verify your atélier account"
+        subject = f"Verify your Truth Truth account"
         html = f"""
         <div style="font-family: Inter, sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 20px;">
             <h1 style="color: #2d5a3d; font-size: 24px;">Hi {name} 👋</h1>
@@ -66,7 +66,7 @@ def render_verification_email(*, name: str, code: str, locale: str = "en") -> tu
             </div>
             <p style="color: #666;">This code expires in 15 minutes. If you didn't request this, ignore this email.</p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 32px 0;">
-            <p style="color: #999; font-size: 12px;">atélier — Your Second Digital Mind</p>
+            <p style="color: #999; font-size: 12px;">Truth Truth · Truth, twice.</p>
         </div>"""
     return subject, html
 
@@ -74,7 +74,7 @@ def render_verification_email(*, name: str, code: str, locale: str = "en") -> tu
 def render_password_reset_email(*, name: str, code: str, locale: str = "en") -> tuple[str, str]:
     """Return (subject, html) for password reset."""
     if locale.startswith("zh"):
-        subject = "重置你的 atélier 密码"
+        subject = "重置你的 Truth Truth 密码"
         html = f"""
         <div style="font-family: Inter, sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 20px;">
             <h1 style="color: #2d5a3d; font-size: 24px;">密码重置</h1>
@@ -84,10 +84,10 @@ def render_password_reset_email(*, name: str, code: str, locale: str = "en") -> 
             </div>
             <p style="color: #666;">验证码 15 分钟内有效。</p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 32px 0;">
-            <p style="color: #999; font-size: 12px;">atélier — Your Second Digital Mind</p>
+            <p style="color: #999; font-size: 12px;">Truth Truth · Truth, twice.</p>
         </div>"""
     else:
-        subject = "Reset your atélier password"
+        subject = "Reset your Truth Truth password"
         html = f"""
         <div style="font-family: Inter, sans-serif; max-width: 480px; margin: 0 auto; padding: 40px 20px;">
             <h1 style="color: #2d5a3d; font-size: 24px;">Password Reset</h1>
@@ -97,6 +97,6 @@ def render_password_reset_email(*, name: str, code: str, locale: str = "en") -> 
             </div>
             <p style="color: #666;">This code expires in 15 minutes.</p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 32px 0;">
-            <p style="color: #999; font-size: 12px;">atélier — Your Second Digital Mind</p>
+            <p style="color: #999; font-size: 12px;">Truth Truth · Truth, twice.</p>
         </div>"""
     return subject, html

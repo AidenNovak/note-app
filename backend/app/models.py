@@ -195,6 +195,10 @@ class InsightGeneration(Base):
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     reports: Mapped[List["InsightReport"]] = relationship(back_populates="generation", cascade="all, delete-orphan")
     agent_runs: Mapped[List["InsightAgentRun"]] = relationship(back_populates="generation", cascade="all, delete-orphan")
+    logs: Mapped[List["InsightGenerationLog"]] = relationship(back_populates="generation", cascade="all, delete-orphan")
+    events: Mapped[List["InsightEvent"]] = relationship(cascade="all, delete-orphan")
+    workspace_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    session_state: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
 
 class InsightReport(Base):
@@ -266,6 +270,37 @@ class InsightAgentRun(Base):
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     generation: Mapped["InsightGeneration"] = relationship(back_populates="agent_runs")
+
+
+class InsightGenerationLog(Base):
+    __tablename__ = "insight_generation_logs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    generation_id: Mapped[str] = mapped_column(String(36), ForeignKey("insight_generations.id"), index=True)
+    event_index: Mapped[int] = mapped_column(Integer)
+    event_type: Mapped[str] = mapped_column(String(64))
+    stage: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    group_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    generation: Mapped["InsightGeneration"] = relationship(back_populates="logs")
+
+
+class InsightEvent(Base):
+    """Persistent event stream for insight generation — replaces process-local buffers."""
+
+    __tablename__ = "insight_events"
+    __table_args__ = (
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    generation_id: Mapped[str] = mapped_column(String(36), ForeignKey("insight_generations.id"), index=True)
+    event_type: Mapped[str] = mapped_column(String(64))
+    sequence: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    group_index: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    payload_json: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class SharedNote(Base):

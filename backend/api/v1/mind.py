@@ -838,10 +838,16 @@ async def get_synthesis(
         import json
         from app.intelligence.ai import get_provider
         from app.intelligence.ai.prompts import SYNTHESIS_PROMPT
+        from app.intelligence.ai.response_schemas import MIND_SYNTHESIS_RESPONSE_FORMAT
 
         provider = get_provider()
         user_prompt = f"User's tags: {', '.join(tags)}\n\nUser's notes:\n{notes_text}"
-        raw = await provider.generate(SYNTHESIS_PROMPT, user_prompt, profile="mind_synthesis")
+        raw = await provider.generate(
+            SYNTHESIS_PROMPT,
+            user_prompt,
+            profile="mind_synthesis",
+            response_format=MIND_SYNTHESIS_RESPONSE_FORMAT,
+        )
 
         raw = raw.strip()
         if raw.startswith("```"):

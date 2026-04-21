@@ -99,19 +99,19 @@ NATIVE_IOS_PLANS: list[Plan] = [
         id="pro",
         prices=(
             Price(id="monthly", plan_id="pro", provider="revenuecat",
-                  provider_price_id="easystarternative_10_1m",
-                  currency="usd", amount_cents=1000, price_type="subscription", interval="month"),
+                  provider_price_id="atelier_pro_monthly",
+                  currency="usd", amount_cents=999, price_type="subscription", interval="month"),
             Price(id="yearly", plan_id="pro", provider="revenuecat",
-                  provider_price_id="easystarternative_100_1y",
-                  currency="usd", amount_cents=10000, price_type="subscription", interval="year"),
+                  provider_price_id="atelier_pro_yearly",
+                  currency="usd", amount_cents=9999, price_type="subscription", interval="year"),
         ),
     ),
     Plan(
         id="lifetime",
         prices=(
             Price(id="lifetime", plan_id="lifetime", provider="revenuecat",
-                  provider_price_id="easystarternative_299_lifetime",
-                  currency="usd", amount_cents=200000, price_type="lifetime"),
+                  provider_price_id="atelier_lifetime",
+                  currency="usd", amount_cents=29900, price_type="lifetime"),
         ),
     ),
 ]
@@ -121,11 +121,19 @@ NATIVE_ANDROID_PLANS: list[Plan] = [
         id="pro",
         prices=(
             Price(id="monthly", plan_id="pro", provider="revenuecat",
-                  provider_price_id="pro_monthly_android",
-                  currency="usd", amount_cents=800, price_type="subscription", interval="month"),
+                  provider_price_id="atelier_pro_monthly",
+                  currency="usd", amount_cents=999, price_type="subscription", interval="month"),
             Price(id="yearly", plan_id="pro", provider="revenuecat",
-                  provider_price_id="pro_yearly_android",
-                  currency="usd", amount_cents=8000, price_type="subscription", interval="year"),
+                  provider_price_id="atelier_pro_yearly",
+                  currency="usd", amount_cents=9999, price_type="subscription", interval="year"),
+        ),
+    ),
+    Plan(
+        id="lifetime",
+        prices=(
+            Price(id="lifetime", plan_id="lifetime", provider="revenuecat",
+                  provider_price_id="atelier_lifetime",
+                  currency="usd", amount_cents=29900, price_type="lifetime"),
         ),
     ),
 ]

@@ -1,5 +1,5 @@
 """
-Test data factories for atélier backend.
+Test data factories for Truth Truth backend.
 
 Usage:
     user_data = UserFactory.build()

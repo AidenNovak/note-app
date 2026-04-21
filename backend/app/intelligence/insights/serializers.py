@@ -7,13 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.intelligence.insights.share_cards import build_share_card_model, extract_share_card_payload
-from app.models import InsightAgentRun, InsightGeneration, InsightReport, Note
+from app.models import InsightAgentRun, InsightGeneration, InsightGenerationLog, InsightReport, Note
 from app.schemas import (
     InsightActionItemOut,
     InsightAgentRunOut,
     InsightDetailOut,
     InsightEvidenceItemOut,
     InsightGenerationOut,
+    InsightGenerationLogOut,
     InsightOut,
     InsightSourceNoteOut,
 )
@@ -29,9 +30,28 @@ def _aggregate_generation_metrics(runs: list[InsightAgentRun]) -> dict[str, floa
     }
 
 
+def serialize_generation_log(log: InsightGenerationLog) -> InsightGenerationLogOut:
+    try:
+        payload = json.loads(log.payload_json or "{}")
+    except json.JSONDecodeError:
+        payload = None
+    return InsightGenerationLogOut(
+        id=log.id,
+        event_index=log.event_index,
+        event_type=log.event_type,
+        stage=log.stage,
+        group_index=log.group_index,
+        message=log.message,
+        payload=payload if isinstance(payload, dict) else None,
+        created_at=log.created_at,
+    )
+
+
 def serialize_generation(generation: InsightGeneration) -> InsightGenerationOut:
     runs = generation.__dict__.get("agent_runs") or []
     runs = sorted(runs, key=lambda item: item.started_at)
+    logs = generation.__dict__.get("logs") or []
+    logs = sorted(logs, key=lambda item: (item.event_index, item.created_at))
     totals = _aggregate_generation_metrics(runs)
     return InsightGenerationOut(
         id=generation.id,
@@ -69,6 +89,7 @@ def serialize_generation(generation: InsightGeneration) -> InsightGenerationOut:
             )
             for run in runs
         ],
+        logs=[serialize_generation_log(log) for log in logs],
     )
 
 
@@ -94,6 +115,17 @@ def serialize_report(report: InsightReport) -> InsightOut:
         created_at=report.created_at,
         generated_at=report.generated_at,
     )
+
+
+def extract_thinking_trace(report: InsightReport) -> str | None:
+    try:
+        payload = json.loads(report.report_json or "{}")
+    except json.JSONDecodeError:
+        return None
+    thinking_trace = payload.get("thinking_trace")
+    if isinstance(thinking_trace, str) and thinking_trace.strip():
+        return thinking_trace
+    return None
 
 
 async def build_report_detail(
@@ -167,6 +199,7 @@ async def build_report_detail(
     return InsightDetailOut(
         **serialize_report(report).model_dump(),
         report_markdown=report.report_markdown,
+        thinking_trace=extract_thinking_trace(report),
         review_summary=report.review_summary,
         source_notes=source_notes,
         evidence_items=evidence_items,

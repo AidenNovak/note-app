@@ -1,6 +1,9 @@
 __pycache__/
 *.pyc
 *.pyo
+.coverage
+.pytest_cache/
+.ruff_cache/
 .env
 .env*.local
 data/
@@ -16,11 +19,12 @@ logs/
 # Node / Turbo (easystarter)
 node_modules/
 .turbo/
+.expo/
+.playwright-cli/
+.wrangler/
 
 # Large assets — keep out of git
-screenshots/
-output/
-archive/
+_local/
 
 # jilly/ is a separate git repo (independent landing page project)
 jilly/

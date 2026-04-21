@@ -1,8 +1,12 @@
 """Clustered Insight Pipeline — graph-driven multi-angle report generation.
 
+Phase 2 refactor: The pipeline now runs through InsightAgent, which executes
+each step via the unified Tool interface. Telemetry is recorded per-tool,
+and the architecture is ready for auto mode.
+
 Two-phase approach:
   Phase 1: Graph clustering (Louvain) + LLM angle discovery (~3s)
-  Phase 2: Parallel report generation via asyncio.gather (~30s)
+  Phase 2: Parallel/per-angle report generation via Agent.run_pipeline (~30s)
 
 Produces 3-5 insight reports per run, each from a different analysis angle
 discovered from the user's knowledge graph structure.
@@ -12,14 +16,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.database import async_session
+from app.intelligence.insights.agent import InsightAgent
+from app.intelligence.insights.graph_clustering import (
+    NoteCluster,
+    cluster_notes,
+)
+from app.intelligence.insights.llm import discover_angles
+from app.intelligence.insights.schemas_ai import AngleOutput, InsightReportOutput
+from app.intelligence.insights.service import broadcast_log, clear_generation_buffers, persist_generation_logs
 from app.models import (
     InsightActionItem,
     InsightEvidenceItem,
@@ -27,16 +39,6 @@ from app.models import (
     InsightReport,
     TaskStatus,
 )
-from app.intelligence.insights.graph_clustering import (
-    NoteCluster,
-    cluster_notes,
-)
-from app.intelligence.insights.llm import (
-    discover_angles,
-    generate_report_for_angle,
-)
-from app.intelligence.insights.schemas_ai import AngleOutput, InsightReportOutput
-from app.intelligence.insights.service import broadcast_log
 
 logger = logging.getLogger(__name__)
 
@@ -62,9 +64,9 @@ def _build_fallback_angles(clusters: list[NoteCluster]) -> list[AngleOutput]:
         angle_name = " / ".join(top_tags) if top_tags else f"主题 {idx + 1}"
         cluster_size = len(cluster.note_ids)
         description = (
-            f"梳理围绕“{angle_name}”主题的共同模式、关键张力与下一步行动。"
+            f'梳理围绕"{angle_name}"主题的共同模式、关键张力与下一步行动。'
             if cluster_size > 1
-            else f"从“{angle_name}”这条孤立线索出发，提炼它最值得扩展的方向。"
+            else f'从"{angle_name}"这条孤立线索出发，提炼它最值得扩展的方向。'
         )
         angles.append(
             AngleOutput(
@@ -104,128 +106,20 @@ def _build_cluster_summary(
     return "\n".join(lines)
 
 
-def _build_notes_content(
-    note_ids: list[str],
-    note_map: dict[str, dict],
-) -> tuple[str, int]:
-    """Build full note content for a set of note IDs, respecting limits."""
-    parts = []
-    total_chars = 0
-    included = 0
-
-    for nid in note_ids[:MAX_NOTES_PER_ANGLE]:
-        note = note_map.get(nid)
-        if not note:
-            continue
-        content = note["content"]
-        tags = ", ".join(note["tags"]) if note["tags"] else "无标签"
-
-        # Truncate individual note if needed
-        if total_chars + len(content) > MAX_CONTENT_CHARS_PER_ANGLE:
-            remaining = MAX_CONTENT_CHARS_PER_ANGLE - total_chars
-            if remaining < 200:
-                break
-            content = content[:remaining] + "\n...(截断)"
-
-        parts.append(
-            f"### {note['title']} (ID: {nid})\n"
-            f"标签: {tags} | 创建于: {note.get('created_at', '未知')}\n\n"
-            f"{content}\n"
-        )
-        total_chars += len(content)
-        included += 1
-
-    return "\n---\n".join(parts), included
-
-
-async def _generate_one_report(
-    angle: AngleOutput,
-    group_index: int,
-    total_groups: int,
-    note_map: dict[str, dict],
-    generation_id: str,
-    date: str,
-    max_retries: int = 2,
-) -> tuple[InsightReportOutput, list[str]] | None:
-    """Generate a single report for one angle with retry. Returns (report, note_ids) or None."""
-    await broadcast_log(generation_id, {
-        "type": "group_started",
-        "group": group_index,
-        "total_groups": total_groups,
-        "theme": angle.angle_name,
-        "angle": angle.description,
-        "note_count": len(angle.note_ids),
-    })
-
-    notes_content, included_count = _build_notes_content(angle.note_ids, note_map)
-    if included_count == 0:
-        logger.warning("No notes available for angle '%s'", angle.angle_name)
-        return None
-
-    # Compact id→title list grounds Step-2 evidence extraction.
-    note_index = [
-        (nid, note_map[nid].get("title") or nid)
-        for nid in angle.note_ids
-        if nid in note_map
-    ]
-
-    last_error = None
-    for attempt in range(1, max_retries + 1):
-        try:
-            report = await generate_report_for_angle(
-                angle_name=angle.angle_name,
-                angle_description=angle.description,
-                type_hint=angle.type_hint,
-                notes_content=notes_content,
-                note_count=included_count,
-                date=date,
-                generation_id=generation_id,
-                group_index=group_index,
-                note_index=note_index,
-            )
-
-            await broadcast_log(generation_id, {
-                "type": "group_completed",
-                "group": group_index,
-                "total_groups": total_groups,
-                "theme": angle.angle_name,
-                "title": report.title,
-                "description": report.description,
-            })
-
-            return report, angle.note_ids
-
-        except Exception as e:
-            last_error = e
-            logger.warning(
-                "Report generation attempt %d/%d failed for angle '%s': %s",
-                attempt, max_retries, angle.angle_name, e,
-            )
-            if attempt < max_retries:
-                await asyncio.sleep(1)
-
-    logger.warning("Report generation exhausted retries for angle '%s': %s", angle.angle_name, last_error)
-    await broadcast_log(generation_id, {
-        "type": "group_completed",
-        "group": group_index,
-        "total_groups": total_groups,
-        "theme": angle.angle_name,
-        "title": "",
-        "description": f"生成失败: {last_error}",
-    })
-    return None
-
-
 async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration) -> None:
     """Main clustered pipeline entry point.
 
     Phase 1: Graph clustering + angle discovery
-    Phase 2: Parallel report generation
+    Phase 2: Report generation via InsightAgent.run_pipeline
     Phase 3: Persist results
     """
     user_id = generation.user_id
     generation_id = generation.id
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # ── Create and start the Agent ──
+    agent = InsightAgent(generation_id, user_id, db, mode="pipeline")
+    await agent.on_start()
 
     # ── Phase 1a: Fetch & cluster ──
     await broadcast_log(generation_id, {
@@ -240,19 +134,16 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
     await db.rollback()
 
     if not all_notes:
+        await agent.on_finish(status=TaskStatus.FAILED, summary="请先添加一些笔记再生成洞察。")
         raise RuntimeError("请先添加一些笔记再生成洞察。")
 
     # ── Sample notes if too many (keep cost/latency reasonable) ──
     if len(all_notes) > MAX_NOTES_TOTAL:
-        import random
-        # Prefer notes with tags & content over empty ones
         scored = sorted(
             all_notes,
-            key=lambda n: (len(n["tags"]), len(n["content"])),
+            key=lambda n: (len(n.get("tags", [])), len(n.get("content", ""))),
             reverse=True,
         )
-        # Take top-scored notes with some randomness: pick top 60% deterministically,
-        # randomly sample the rest to add variety across runs
         deterministic_count = int(MAX_NOTES_TOTAL * 0.6)
         pool = scored[deterministic_count:]
         random_pick = random.sample(pool, min(len(pool), MAX_NOTES_TOTAL - deterministic_count))
@@ -322,6 +213,7 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
         angles = _build_fallback_angles(clusters)
         angles = [a for a in angles if a.note_ids]
     if not angles:
+        await agent.on_finish(status=TaskStatus.FAILED, summary="未能发现有效的分析角度。")
         raise RuntimeError("未能发现有效的分析角度。")
 
     await broadcast_log(generation_id, {
@@ -359,37 +251,31 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
     })
 
     # Close the read-only DB transaction before long-running LLM calls so the
-    # connection isn't idle-in-transaction while waiting for OpenRouter (avoids
-    # pgbouncer/proxy disconnects).
+    # connection isn't idle-in-transaction while waiting for OpenRouter.
     await db.rollback()
 
-    # ── Phase 2: Parallel report generation ──
-    tasks = [
-        _generate_one_report(
-            angle=angle,
-            group_index=idx + 1,
-            total_groups=len(angles),
-            note_map=note_map,
-            generation_id=generation_id,
-            date=today,
-        )
-        for idx, angle in enumerate(angles)
-    ]
-
-    results = await asyncio.gather(*tasks)
-    reports = [r for r in results if r is not None]
+    # ── Phase 2: Report generation via Agent ──
+    reports = await agent.run_pipeline(clusters, angles, note_map, today)
 
     if not reports:
+        await agent.on_finish(status=TaskStatus.FAILED, summary="所有报告生成均失败。")
         raise RuntimeError("所有报告生成均失败。")
 
     # ── Phase 3: Persist ──
-    # Use a fresh DB session for persistence so we aren't re-using a connection
-    # that may have been dropped during the LLM phase.
     async with async_session() as persist_db:
         generation_for_persist = await persist_db.get(InsightGeneration, generation_id)
         if generation_for_persist is None:
             raise RuntimeError("Generation not found during persist")
         await _persist_clustered_reports(persist_db, generation_for_persist, reports, all_notes)
+
+    # Notify completion
+    summary = f"基于图聚类生成了 {len(reports)} 篇洞察报告，分析了 {len(all_notes)} 条笔记"
+    await agent.on_finish(status=TaskStatus.COMPLETED, summary=summary)
+
+    logger.info(
+        "Clustered pipeline completed: %d reports, generation=%s",
+        len(reports), generation_id,
+    )
 
 
 async def _persist_clustered_reports(
@@ -488,18 +374,17 @@ async def _persist_clustered_reports(
     generation.total_reports = len(reports)
     generation.completed_at = generated_at
     generation.is_active = True
-    generation.workflow_version = "clustered-v1"
+    generation.workflow_version = "clustered-v2"
     generation.summary = f"基于图聚类生成了 {len(reports)} 篇洞察报告，分析了 {len(all_notes)} 条笔记"
     generation.error = None
 
     await db.commit()
 
-    await broadcast_log(generation_id, {
+    completed_event = {
         "type": "completed",
         "summary": generation.summary,
-    })
-
-    logger.info(
-        "Clustered pipeline completed: %d reports, generation=%s",
-        len(reports), generation_id,
-    )
+    }
+    await persist_generation_logs(db, generation_id, terminal_event=completed_event)
+    await db.commit()
+    await broadcast_log(generation_id, completed_event)
+    clear_generation_buffers(generation_id)

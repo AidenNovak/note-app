@@ -60,7 +60,7 @@ NOTES: list[dict] = [
             "- **Acceptance rate**: % of AI suggestions users keep as-is\n"
             "- **Edit distance**: how much users modify AI output\n"
             "- **Time-to-value**: seconds from request to useful output\n\n"
-            "我们在 Atelier 的实践：每周从 rejection logs 中采样 500 条做 DPO 训练，"
+            "我们在 Truth Truth 的实践：每周从 rejection logs 中采样 500 条做 DPO 训练，"
             "acceptance rate 从 62% 提升到 78%。"
         ),
     },

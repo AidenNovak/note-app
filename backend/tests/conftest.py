@@ -1,5 +1,5 @@
 """
-Shared test fixtures for atélier backend unit & integration tests.
+Shared test fixtures for Truth Truth backend unit & integration tests.
 
 Provides:
 - Async SQLite database session (isolated per test)

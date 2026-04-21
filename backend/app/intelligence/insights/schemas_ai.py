@@ -55,6 +55,7 @@ class InsightReportOutput(BaseModel):
     description: str
     type: str = "report"
     report_markdown: str
+    thinking_trace: str | None = None
     confidence: float = Field(ge=0.0, le=1.0, default=0.7)
     importance_score: float = Field(ge=0.0, le=1.0, default=0.7)
     novelty_score: float = Field(ge=0.0, le=1.0, default=0.5)

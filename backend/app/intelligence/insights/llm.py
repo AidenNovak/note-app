@@ -857,6 +857,7 @@ async def generate_report_for_angle(
         description=extraction.description,
         type=extraction.type,
         report_markdown=write_result.text,
+        thinking_trace=write_result.reasoning or None,
         confidence=extraction.confidence,
         importance_score=extraction.importance_score,
         novelty_score=extraction.novelty_score,
