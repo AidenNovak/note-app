@@ -165,21 +165,64 @@ async def get_insight_detail(
 
 
 async def _background_generate_clustered(generation_id: str) -> None:
-    """Run clustered pipeline in its own db session."""
+    """Run clustered pipeline in its own db session.
+
+    Supports crash recovery: if the generation already has workspace data
+    (clusters/angles), we resume from the last checkpoint instead of restarting.
+    """
     async with async_session() as db:
         generation = await db.get(InsightGeneration, generation_id)
         if generation is None:
             return
         user_id = generation.user_id
+
+        from app.intelligence.insights.agent import AgentState, InsightAgent
+
+        # Check if this is a resume (has workspace + state)
+        agent = await InsightAgent.load(generation_id, db)
+        is_resume = (
+            agent.workspace.get("clusters")
+            and agent.workspace.get("angles")
+            and agent.state in (AgentState.DISCOVERING, AgentState.GENERATING, AgentState.AWAITING_HUMAN)
+        )
+
         try:
-            generation.status = TaskStatus.PROCESSING
-            generation.workflow_version = "clustered-v1"
-            await db.commit()
+            if is_resume:
+                logger.info("Resuming generation %s from state=%s angle=%s", generation_id, agent.state, agent.workspace.get("_current_angle_index", 0))
+            else:
+                generation.status = TaskStatus.PROCESSING
+                generation.workflow_version = "clustered-v2"
+                await db.commit()
 
             from app.intelligence.insights.clustered_pipeline import run_clustered_pipeline
             from app.notifications.triggers import notify_insight_ready
 
-            await run_clustered_pipeline(db, generation)
+            if is_resume:
+                # Resume from checkpoint: skip clustering/angles, continue pipeline
+                today = agent.workspace.get("today", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+
+                # If awaiting human, we can't auto-resume — leave it for user
+                if agent.state == AgentState.AWAITING_HUMAN:
+                    logger.info("Generation %s paused for human approval, skipping auto-resume", generation_id)
+                    return
+
+                reports = await agent.run_pipeline(today)
+
+                if reports:
+                    from app.intelligence.insights.clustered_pipeline import _persist_clustered_reports
+                    async with async_session() as persist_db:
+                        gen = await persist_db.get(InsightGeneration, generation_id)
+                        if gen is not None:
+                            all_notes = list(agent.workspace.get("note_map", {}).values())
+                            await _persist_clustered_reports(persist_db, gen, reports, all_notes)
+                    summary = f"基于图聚类生成了 {len(reports)} 篇洞察报告"
+                    await agent.on_finish(status=TaskStatus.COMPLETED, summary=summary)
+                else:
+                    await agent.on_finish(status=TaskStatus.FAILED, summary="所有报告生成均失败。")
+            else:
+                # Fresh start
+                await run_clustered_pipeline(db, generation)
+
             # Notify user that insight is ready
             async with async_session() as notify_db:
                 notify_gen = await notify_db.get(InsightGeneration, generation_id)
@@ -190,7 +233,6 @@ async def _background_generate_clustered(generation_id: str) -> None:
                     )
         except Exception as exc:
             logger.exception("Clustered pipeline failed for %s", generation_id)
-            # Use a fresh session for error handling to avoid hanging on a stale connection
             async with async_session() as err_db:
                 generation = await err_db.get(InsightGeneration, generation_id)
                 if generation is not None:
@@ -199,8 +241,7 @@ async def _background_generate_clustered(generation_id: str) -> None:
                     generation.is_active = False
                     generation.completed_at = datetime.now(timezone.utc)
                     await err_db.commit()
-                    error_event = {"type": "error", "message": str(exc)[:300]}
-                    await broadcast_log(generation_id, error_event)
+                    await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
             clear_generation_buffers(generation_id)
 
 
@@ -226,6 +267,10 @@ class ChatRequest(BaseModel):
 class RegenerateRequest(BaseModel):
     angle_index: int = Field(ge=0, description="要重新生成的角度索引（0-based）")
     instruction: str | None = Field(default=None, max_length=1000, description="额外的生成指导")
+
+
+class ResumeRequest(BaseModel):
+    action: str = Field(default="approve", pattern="^(approve|retry|skip)$")
 
 
 @router.post("/generations/{generation_id}/chat", response_model=StatusResponse)
@@ -259,7 +304,7 @@ async def chat_with_insight_agent(
 
     from app.intelligence.insights.agent import InsightAgent
 
-    agent = InsightAgent(generation_id, current_user.id, db, mode="pipeline")
+    agent = await InsightAgent.load(generation_id, db)
     await agent.on_chat_message(body.message)
 
     return {"status": "ok"}
@@ -291,7 +336,7 @@ async def regenerate_insight_angle(
 
     from app.intelligence.insights.agent import InsightAgent
 
-    agent = InsightAgent(generation_id, current_user.id, db, mode="pipeline")
+    agent = await InsightAgent.load(generation_id, db)
 
     # Restore workspace
     reports = agent.workspace.get("reports", [])
@@ -312,6 +357,101 @@ async def regenerate_insight_angle(
     await agent.on_chat_message(message)
 
     return {"status": "ok"}
+
+
+@router.post("/generations/{generation_id}/resume", response_model=StatusResponse)
+async def resume_insight_generation(
+    generation_id: str,
+    body: ResumeRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Resume a paused insight generation after human-in-the-loop approval.
+
+    Only valid when the agent is in AWAITING_HUMAN state.
+    """
+    result = await db.execute(
+        select(InsightGeneration).where(
+            InsightGeneration.id == generation_id,
+            InsightGeneration.user_id == current_user.id,
+        )
+    )
+    generation = result.scalar_one_or_none()
+    if generation is None:
+        raise HTTPException(status_code=404, detail={"error": {"code": "GENERATION_NOT_FOUND", "message": "Generation not found"}})
+
+    from app.intelligence.insights.agent import AgentState, InsightAgent
+
+    agent = await InsightAgent.load(generation_id, db)
+
+    if agent.state != AgentState.AWAITING_HUMAN:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": {"code": "NOT_PAUSED", "message": f"Generation 不处于暂停状态（当前: {agent.state.value}）"}},
+        )
+
+    await agent.resume(body.action)
+
+    # Continue generation in background if approved or retried
+    if body.action in ("approve", "retry"):
+        asyncio.create_task(_background_continue_generation(generation_id))
+
+    return {"status": "ok"}
+
+
+async def _background_continue_generation(generation_id: str) -> None:
+    """Continue a generation from its current state (used after resume)."""
+    async with async_session() as db:
+        generation = await db.get(InsightGeneration, generation_id)
+        if generation is None:
+            return
+
+        from app.intelligence.insights.agent import AgentState, InsightAgent
+
+        agent = await InsightAgent.load(generation_id, db)
+
+        # If the agent was awaiting human, resume should have transitioned it
+        # If it was in GENERATING (e.g. crash recovery), continue from there
+        try:
+            if agent.state == AgentState.GENERATING:
+                today = agent.workspace.get("today", datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+                reports = await agent.run_pipeline(today)
+
+                if reports:
+                    from app.intelligence.insights.clustered_pipeline import _persist_clustered_reports
+                    from app.notifications.triggers import notify_insight_ready
+
+                    async with async_session() as persist_db:
+                        gen = await persist_db.get(InsightGeneration, generation_id)
+                        if gen is not None:
+                            all_notes = list(agent.workspace.get("note_map", {}).values())
+                            await _persist_clustered_reports(persist_db, gen, reports, all_notes)
+
+                    summary = f"基于图聚类生成了 {len(reports)} 篇洞察报告"
+                    await agent.on_finish(status=TaskStatus.COMPLETED, summary=summary)
+
+                    async with async_session() as notify_db:
+                        notify_gen = await notify_db.get(InsightGeneration, generation_id)
+                        if notify_gen is not None:
+                            await notify_insight_ready(
+                                generation.user_id, generation_id,
+                                notify_gen.summary or "你的洞察分析已完成",
+                            )
+                else:
+                    await agent.on_finish(status=TaskStatus.FAILED, summary="所有报告生成均失败。")
+
+        except Exception as exc:
+            logger.exception("Continue generation failed for %s", generation_id)
+            async with async_session() as err_db:
+                gen = await err_db.get(InsightGeneration, generation_id)
+                if gen is not None:
+                    gen.status = TaskStatus.FAILED
+                    gen.error = str(exc)[:500]
+                    gen.is_active = False
+                    gen.completed_at = datetime.now(timezone.utc)
+                    await err_db.commit()
+                    await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
+            clear_generation_buffers(generation_id)
 
 
 # ── Export endpoints ──────────────────────

@@ -24,7 +24,7 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import async_session
-from app.intelligence.insights.agent import InsightAgent
+from app.intelligence.insights.agent import ExecutionMode, InsightAgent
 from app.intelligence.insights.graph_clustering import (
     NoteCluster,
     cluster_notes,
@@ -118,7 +118,8 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     # ── Create and start the Agent ──
-    agent = InsightAgent(generation_id, user_id, db, mode="pipeline")
+    agent = await InsightAgent.load(generation_id, db)
+    agent.mode = ExecutionMode.PIPELINE
     await agent.on_start()
 
     # ── Phase 1a: Fetch & cluster ──
@@ -250,12 +251,18 @@ async def run_clustered_pipeline(db: AsyncSession, generation: InsightGeneration
         },
     })
 
+    # Persist workspace so the agent can resume after a restart
+    agent.workspace["clusters"] = [c.__dict__ if hasattr(c, "__dataclass_fields__") else c for c in clusters]
+    agent.workspace["note_map"] = note_map
+    agent.workspace["angles"] = [a.model_dump() if hasattr(a, "model_dump") else a for a in angles]
+    await agent._persist_workspace()
+
     # Close the read-only DB transaction before long-running LLM calls so the
     # connection isn't idle-in-transaction while waiting for OpenRouter.
     await db.rollback()
 
     # ── Phase 2: Report generation via Agent ──
-    reports = await agent.run_pipeline(clusters, angles, note_map, today)
+    reports = await agent.run_pipeline(today)
 
     if not reports:
         await agent.on_finish(status=TaskStatus.FAILED, summary="所有报告生成均失败。")

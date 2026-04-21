@@ -45,12 +45,14 @@ class AgentState(str, enum.Enum):
     DISCOVERING = "discovering"
     GENERATING = "generating"
     REVIEWING = "reviewing"
+    AWAITING_HUMAN = "awaiting_human"
     FAILED = "failed"
 
 
 class ExecutionMode(str, enum.Enum):
     PIPELINE = "pipeline"
     AUTO = "auto"
+    INTERACTIVE = "interactive"
 
 
 @dataclass
@@ -94,6 +96,21 @@ class InsightAgent:
         self.workspace: dict[str, Any] = {}
         self.tools: dict[str, Tool] = {t.name: t for t in ALL_TOOLS}
         self._sequence = 0
+
+    @classmethod
+    async def load(cls, generation_id: str, db: AsyncSession) -> "InsightAgent":
+        """Restore an agent from the database (workspace + state)."""
+        generation = await db.get(InsightGeneration, generation_id)
+        if generation is None:
+            raise ValueError(f"Generation {generation_id} not found")
+
+        agent = cls(
+            generation_id=generation_id,
+            user_id=generation.user_id,
+            db=db,
+        )
+        await agent._restore_workspace()
+        return agent
 
     # ── Lifecycle hooks ──
 
@@ -399,13 +416,14 @@ class InsightAgent:
     # ── State transitions ──
 
     async def transition_to(self, new_state: AgentState) -> None:
-        """Transition the agent to a new state, persisting to DB."""
+        """Transition the agent to a new state, persisting state + workspace to DB."""
         old_state = self.state
         self.state = new_state
 
         generation = await self.db.get(InsightGeneration, self.generation_id)
         if generation is not None:
             generation.session_state = new_state.value
+            generation.workspace_json = json.dumps(self.workspace, ensure_ascii=False, default=str)
             await self.db.commit()
 
         logger.info(
@@ -418,7 +436,13 @@ class InsightAgent:
     # ── Tool execution ──
 
     async def _execute_tool(self, tool: Tool, params: Any) -> ToolResult:
-        """Execute a tool with telemetry tracking."""
+        """Execute a tool with built-in broadcast events."""
+        await self.broadcast({
+            "type": "tool_start",
+            "tool": tool.name,
+            "stage": self.state.value,
+        })
+
         ctx = ToolContext(
             db=self.db,
             user_id=self.user_id,
@@ -439,32 +463,127 @@ class InsightAgent:
             )
             logger.exception("Tool %s failed: %s", tool.name, exc)
 
+        await self.broadcast({
+            "type": "tool_finish",
+            "tool": tool.name,
+            "success": result.success,
+            "duration_ms": result.duration_ms,
+            "error": result.error[:200] if result.error else None,
+        })
+
         return result
 
     # ── Pipeline mode (default, behaviour-identical to clustered-v1) ──
 
-    async def run_pipeline(
-        self,
-        clusters: list[Any],
-        angles: list[Any],
-        note_map: dict[str, dict],
-        today: str,
-    ) -> list[tuple[Any, list[str]]]:
+    async def run_pipeline(self, today: str) -> list[tuple[Any, list[str]]]:
         """Run the hardcoded 3-phase pipeline using Tool interfaces.
 
-        This is the default mode — behaviour is identical to clustered-v1,
-        but each step is executed through the Tool abstraction so that:
-        - Telemetry is recorded for every step
-        - The architecture is ready for auto mode
-        - Tools are reusable and composable
+        Reads clusters/angles/note_map from workspace (must be prepared by caller
+        before invocation). Internally delegates to ``step()`` so the agent can
+        resume from any step after a process restart.
         """
-        from app.intelligence.insights.tools.cluster import ClusterNotesParams
-        from app.intelligence.insights.tools.discover import DiscoverAnglesParams
-        from app.intelligence.insights.tools.write import WriteReportParams
+        self.workspace["today"] = today
+        await self._persist_workspace()
 
-        # Phase 1a — cluster (already done by caller, but record in workspace)
-        self.workspace["clusters"] = [c.__dict__ if hasattr(c, "__dataclass_fields__") else c for c in clusters]
-        self.workspace["note_map"] = note_map
+        # Phase 1 — prepare (IDLE → DISCOVERING → GENERATING)
+        if self.state == AgentState.IDLE:
+            await self.step()
+        if self.state == AgentState.DISCOVERING:
+            await self.step()
+
+        # Phase 2 — generate reports one at a time
+        while self.state == AgentState.GENERATING:
+            await self.step()
+
+        # Phase 3 — finalize is handled by caller via on_finish()
+
+        # Collect reports from workspace
+        reports_data = self.workspace.get("reports", [])
+        reports: list[tuple[Any, list[str]]] = []
+        for item in reports_data:
+            report_data = item.get("report", {})
+            note_ids = item.get("note_ids", [])
+            reports.append((report_data, note_ids))
+
+        return reports
+
+    # ── Discrete step execution (resumable) ──
+
+    async def step(self) -> TurnResult:
+        """Execute one discrete step.
+
+        The agent determines what to do based on its current state
+        and workspace contents. After each step, workspace is checkpointed.
+        """
+        await self.before_turn()
+
+        if self.state == AgentState.IDLE:
+            return await self._step_start()
+
+        if self.state == AgentState.DISCOVERING:
+            return await self._step_prepare()
+
+        if self.state == AgentState.AWAITING_HUMAN:
+            # Paused for human approval — step is a no-op until resume()
+            return TurnResult(tool_name="awaiting_human")
+
+        if self.state == AgentState.GENERATING:
+            result = await self._step_write_next_report()
+            await self.on_step_finish(result)
+            await self._persist_workspace()
+            return result
+
+        if self.state == AgentState.REVIEWING:
+            return await self._step_finalize()
+
+        logger.warning("Agent %s in unexpected state %s", self.generation_id, self.state)
+        return TurnResult()
+
+    async def resume(self, action: str = "approve") -> TurnResult:
+        """Resume execution after human-in-the-loop pause.
+
+        Actions: "approve" | "retry" | "skip"
+        """
+        if self.state != AgentState.AWAITING_HUMAN:
+            logger.warning("Resume called but agent not awaiting human: %s", self.state)
+            return TurnResult()
+
+        await self.broadcast({
+            "type": "human_action",
+            "action": action,
+            "stage": "angles_approved" if action == "approve" else f"angles_{action}",
+        })
+
+        if action == "skip":
+            await self.transition_to(AgentState.REVIEWING)
+            return TurnResult(tool_name="skip")
+
+        # approve or retry — both continue to GENERATING
+        await self.transition_to(AgentState.GENERATING)
+        return TurnResult(tool_name="resume")
+
+    async def _step_start(self) -> TurnResult:
+        """Step 0: restore workspace and transition to DISCOVERING."""
+        await self._restore_workspace()
+        await self.transition_to(AgentState.DISCOVERING)
+        await self.broadcast({
+            "type": "starting",
+            "message": "Insight Agent 启动...",
+        })
+        return TurnResult(tool_name="start")
+
+    async def _step_prepare(self) -> TurnResult:
+        """Step 1: validate workspace, broadcast angles, transition to GENERATING (or AWAITING_HUMAN)."""
+        clusters = self.workspace.get("clusters", [])
+        angles_data = self.workspace.get("angles", [])
+        note_map = self.workspace.get("note_map", {})
+
+        if not clusters or not angles_data or not note_map:
+            raise ValueError("Workspace not prepared: clusters/angles/note_map missing")
+
+        # Normalize angles
+        angles = self._normalize_angles(angles_data)
+        self.workspace["angles"] = [a.model_dump() if hasattr(a, "model_dump") else a for a in angles]
 
         await self.broadcast({
             "type": "clustering",
@@ -472,10 +591,6 @@ class InsightAgent:
             "note_count": len(note_map),
             "message": f"发现 {len(clusters)} 个主题簇，共 {len(note_map)} 条笔记",
         })
-
-        # Phase 1b — angle discovery (already done by caller)
-        self.workspace["angles"] = [a.model_dump() if hasattr(a, "model_dump") else a for a in angles]
-
         await self.broadcast({
             "type": "agent_turn",
             "turn": 0,
@@ -491,83 +606,138 @@ class InsightAgent:
             "message": f"发现 {len(angles)} 个分析角度",
         })
 
-        # Phase 2 — parallel report generation via Tool execution
-        await self.transition_to(AgentState.GENERATING)
+        # Reset progress counter
+        self.workspace["_current_angle_index"] = 0
 
-        reports: list[tuple[Any, list[str]]] = []
+        if self.mode == ExecutionMode.INTERACTIVE:
+            await self.transition_to(AgentState.AWAITING_HUMAN)
+            await self.broadcast({
+                "type": "human_in_the_loop",
+                "action_required": "approve_angles",
+                "payload": {
+                    "angles": [
+                        {"name": a.angle_name, "description": a.description, "type_hint": a.type_hint}
+                        for a in angles
+                    ],
+                },
+            })
+            return TurnResult(tool_name="prepare", output="awaiting_human")
+
+        await self.transition_to(AgentState.GENERATING)
+        return TurnResult(tool_name="prepare")
+
+    async def _step_write_next_report(self) -> TurnResult:
+        """Step 2: generate the next report (resumable via _current_angle_index)."""
+        from app.intelligence.insights.tools.write import WriteReportParams
+
+        angles_data = self.workspace.get("angles", [])
+        note_map = self.workspace.get("note_map", {})
+        today = self.workspace.get("today", "")
+        current_idx = self.workspace.get("_current_angle_index", 0)
+
+        angles = self._normalize_angles(angles_data)
         total_groups = len(angles)
 
-        for idx, angle in enumerate(angles):
-            group_index = idx + 1
+        if current_idx >= total_groups:
+            # All reports done
+            await self.transition_to(AgentState.REVIEWING)
+            return TurnResult(tool_name="write_report")
 
-            # Build notes content (same logic as clustered_pipeline)
-            notes_content, included_count = self._build_notes_content(angle.note_ids, note_map)
-            if included_count == 0:
-                logger.warning("No notes available for angle '%s'", angle.angle_name)
-                continue
+        angle = angles[current_idx]
+        group_index = current_idx + 1
 
-            note_index = [
-                (nid, note_map[nid].get("title") or nid)
-                for nid in angle.note_ids
-                if nid in note_map
-            ]
+        notes_content, included_count = self._build_notes_content(angle.note_ids, note_map)
+        if included_count == 0:
+            logger.warning("No notes available for angle '%s'", angle.angle_name)
+            self.workspace["_current_angle_index"] = current_idx + 1
+            return TurnResult(tool_name="write_report", output=None)
 
-            await self.broadcast({
-                "type": "group_started",
-                "group": group_index,
-                "total_groups": total_groups,
-                "theme": angle.angle_name,
-                "angle": angle.description,
-                "note_count": len(angle.note_ids),
-            })
+        note_index = [
+            (nid, note_map[nid].get("title") or nid)
+            for nid in angle.note_ids
+            if nid in note_map
+        ]
 
-            # Execute write_report tool
-            write_params = WriteReportParams(
-                angle_name=angle.angle_name,
-                angle_description=angle.description,
-                type_hint=angle.type_hint,
-                notes_content=notes_content,
-                note_count=included_count,
-                date=today,
-                group_index=group_index,
-                note_index=note_index,
-            )
+        await self.broadcast({
+            "type": "group_started",
+            "group": group_index,
+            "total_groups": total_groups,
+            "theme": angle.angle_name,
+            "angle": angle.description,
+            "note_count": len(angle.note_ids),
+        })
 
-            tool = self.tools["write_report"]
-            result = await self._execute_tool(tool, write_params)
+        write_params = WriteReportParams(
+            angle_name=angle.angle_name,
+            angle_description=angle.description,
+            type_hint=angle.type_hint,
+            notes_content=notes_content,
+            note_count=included_count,
+            date=today,
+            group_index=group_index,
+            note_index=note_index,
+        )
 
-            if not result.success or result.output is None:
-                logger.warning("Report generation failed for angle '%s': %s", angle.angle_name, result.error)
-                await self.broadcast({
-                    "type": "group_completed",
-                    "group": group_index,
-                    "total_groups": total_groups,
-                    "theme": angle.angle_name,
-                    "title": "",
-                    "description": f"生成失败: {result.error}",
-                })
-                continue
+        tool = self.tools["write_report"]
+        result = await self._execute_tool(tool, write_params)
 
-            report = result.output
-            reports.append((report, angle.note_ids))
-
+        if not result.success or result.output is None:
+            logger.warning("Report generation failed for angle '%s': %s", angle.angle_name, result.error)
             await self.broadcast({
                 "type": "group_completed",
                 "group": group_index,
                 "total_groups": total_groups,
                 "theme": angle.angle_name,
-                "title": report.title,
-                "description": report.description,
-                "thinking_trace": report.thinking_trace or "",
-                "report_markdown": report.report_markdown,
+                "title": "",
+                "description": f"生成失败: {result.error}",
             })
+            self.workspace["_current_angle_index"] = current_idx + 1
+            return TurnResult(tool_name="write_report", result=result)
 
-        self.workspace["reports"] = [
-            {"report": r.model_dump() if hasattr(r, "model_dump") else r, "note_ids": nids}
-            for r, nids in reports
-        ]
+        report = result.output
 
-        return reports
+        # Save report to workspace
+        reports = self.workspace.get("reports", [])
+        reports.append({
+            "report": report.model_dump() if hasattr(report, "model_dump") else report,
+            "note_ids": angle.note_ids,
+        })
+        self.workspace["reports"] = reports
+        self.workspace["_current_angle_index"] = current_idx + 1
+
+        await self.broadcast({
+            "type": "group_completed",
+            "group": group_index,
+            "total_groups": total_groups,
+            "theme": angle.angle_name,
+            "title": report.title,
+            "description": report.description,
+            "thinking_trace": report.thinking_trace or "",
+            "report_markdown": report.report_markdown,
+        })
+
+        return TurnResult(tool_name="write_report", output=report, result=result)
+
+    async def _step_finalize(self) -> TurnResult:
+        """Step 3: finalize and persist completed reports."""
+        await self.broadcast({
+            "type": "completed",
+            "summary": f"生成完成，共 {len(self.workspace.get('reports', []))} 篇报告",
+        })
+        return TurnResult(tool_name="finalize")
+
+    def _normalize_angles(self, angles_data: list[Any]) -> list[Any]:
+        """Normalize angles from workspace (dicts from JSON or AngleOutput objects)."""
+        angles: list[Any] = []
+        for a in angles_data:
+            if hasattr(a, "angle_name"):
+                angles.append(a)
+            elif isinstance(a, dict):
+                from app.intelligence.insights.schemas_ai import AngleOutput
+                angles.append(AngleOutput(**a))
+            else:
+                angles.append(a)
+        return angles
 
     def _build_notes_content(
         self,
