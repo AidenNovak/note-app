@@ -40,13 +40,24 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 
 
 async def _background_embed(note_id: str, content: str, user_id: str) -> None:
-    """Run embedding + similarity in a background task with its own DB session."""
+    """Push note embedding to Cloudflare Worker (Vectorize + Supabase note_embeddings).
+
+    The Worker generates the vector via Workers AI binding (@cf/baai/bge-m3),
+    upserts to Vectorize (namespace=user_id) for pipeline semantic search, and
+    also writes to Supabase note_embeddings for note_collaboration.py backward compat.
+    """
     import logging
+    import httpx
     logger = logging.getLogger(__name__)
+
+    worker_url = os.environ.get("WORKER_INSIGHTS_URL", "")
+    worker_key = os.environ.get("WORKER_API_KEY", "")
+    if not worker_url or not worker_key:
+        logger.warning("WORKER_INSIGHTS_URL or WORKER_API_KEY not set; skipping embedding for note %s", note_id)
+        return
+
     try:
-        from app.intelligence.embeddings import update_note_embedding, recompute_similarities
         async with async_session() as db:
-            # Only update ai_status if AI processing is pending (tagging will follow)
             await db.execute(
                 Note.__table__.update()
                 .where(Note.__table__.c.id == note_id, Note.__table__.c.ai_status == AIStatus.PENDING)
@@ -54,8 +65,19 @@ async def _background_embed(note_id: str, content: str, user_id: str) -> None:
             )
             await db.commit()
 
-            await update_note_embedding(db, note_id, content)
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{worker_url}/embed",
+                headers={"X-Worker-Api-Key": worker_key, "Content-Type": "application/json"},
+                json={"note_id": note_id, "content": content, "user_id": user_id},
+            )
+            resp.raise_for_status()
+
+        # Recompute Supabase-side similarities (note_collaboration.py still uses these)
+        from app.intelligence.embeddings import recompute_similarities
+        async with async_session() as db:
             await recompute_similarities(db, note_id, user_id)
+
     except Exception:
         logger.error("Background embedding failed for note %s (user %s)", note_id, user_id, exc_info=True)
 

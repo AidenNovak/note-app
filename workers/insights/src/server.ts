@@ -41,6 +41,17 @@ export default {
       });
     }
 
+    // POST /embed — upsert note embedding to Vectorize + Supabase
+    if (url.pathname === "/embed" && request.method === "POST") {
+      return handleEmbed(request, env);
+    }
+
+    // DELETE /embed/:noteId — delete note embedding from Vectorize + Supabase
+    const embedDeleteMatch = url.pathname.match(/^\/embed\/([^\/]+)$/);
+    if (embedDeleteMatch && request.method === "DELETE") {
+      return handleEmbedDelete(embedDeleteMatch[1], request, env);
+    }
+
     // ── HTTP REST API (FastAPI bridge) ──
 
     // POST /api/v1/insights/generate — trigger generation
@@ -236,6 +247,113 @@ async function handleLatestGeneration(request: Request, env: Env): Promise<Respo
 }
 
 // ── Helpers ──
+
+/**
+ * POST /embed
+ * Body: { note_id, content, user_id, updated_at? }
+ * Auth: X-Worker-Api-Key header
+ *
+ * Generates embedding via Workers AI binding, then upserts to:
+ *   1. Vectorize (namespace = user_id, for pipeline semantic search)
+ *   2. Supabase note_embeddings (for note_collaboration.py backward compat)
+ * Both writes must succeed; returns 500 if either fails.
+ */
+async function handleEmbed(request: Request, env: Env): Promise<Response> {
+  const apiKey = request.headers.get("X-Worker-Api-Key");
+  if (!apiKey || apiKey !== env.BACKEND_API_KEY) {
+    return jsonResponse({ error: "Unauthorized" }, 401, env);
+  }
+
+  let body: { note_id?: string; content?: string; user_id?: string; updated_at?: string };
+  try {
+    body = await request.json();
+  } catch {
+    return jsonResponse({ error: "Invalid JSON" }, 400, env);
+  }
+
+  const { note_id, content, user_id, updated_at } = body;
+  if (!note_id || !content || !user_id) {
+    return jsonResponse({ error: "note_id, content, user_id required" }, 400, env);
+  }
+
+  const trimmed = content.trim().slice(0, 8000);
+  if (!trimmed) {
+    return jsonResponse({ error: "content is empty" }, 400, env);
+  }
+
+  try {
+    // Generate embedding via native Workers AI binding
+    const aiResult = await env.AI.run("@cf/baai/bge-m3" as any, { text: trimmed } as any) as any;
+    if (!aiResult?.data?.[0]) {
+      throw new Error(`Unexpected AI response shape: ${JSON.stringify(aiResult)}`);
+    }
+    const vector: number[] = aiResult.data[0];
+
+    // Write 1: Vectorize (namespace = user_id for tenant isolation)
+    await env.VECTORIZE.upsert([{
+      id: note_id,
+      values: vector,
+      namespace: user_id,
+      metadata: { updated_at: updated_at || new Date().toISOString() },
+    }]);
+
+    // Write 2: Supabase note_embeddings (backward compat for note_collaboration.py)
+    // id has no server-side default; generate one, but use onConflict to UPDATE on note_id match.
+    const sb = db.getSupabase(env);
+    const now = new Date().toISOString();
+    const { error: sbError } = await sb.from("note_embeddings").upsert({
+      id: crypto.randomUUID(),
+      note_id,
+      embedding_json: JSON.stringify(vector),
+      model: "@cf/baai/bge-m3",
+      dimension: vector.length,
+      created_at: now,
+      updated_at: now,
+    }, { onConflict: "note_id" });
+    if (sbError) throw new Error(`Supabase upsert failed: ${sbError.message}`);
+
+    return jsonResponse({ ok: true, dimension: vector.length }, 200, env);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : JSON.stringify(err);
+    console.error("Embed failed:", msg);
+    return jsonResponse({ error: msg }, 500, env);
+  }
+}
+
+/**
+ * DELETE /embed/:noteId?user_id=...
+ * Auth: X-Worker-Api-Key header
+ *
+ * Removes note embedding from Vectorize (by namespace + id) and Supabase.
+ */
+async function handleEmbedDelete(noteId: string, request: Request, env: Env): Promise<Response> {
+  const apiKey = request.headers.get("X-Worker-Api-Key");
+  if (!apiKey || apiKey !== env.BACKEND_API_KEY) {
+    return jsonResponse({ error: "Unauthorized" }, 401, env);
+  }
+
+  const url = new URL(request.url);
+  const userId = url.searchParams.get("user_id");
+  if (!userId) {
+    return jsonResponse({ error: "user_id query param required" }, 400, env);
+  }
+
+  try {
+    // Delete from Vectorize (namespace-scoped vectors are identified by id alone)
+    await env.VECTORIZE.deleteByIds([noteId]);
+
+    // Delete from Supabase note_embeddings
+    const sb = db.getSupabase(env);
+    const { error: sbError } = await sb.from("note_embeddings").delete().eq("note_id", noteId);
+    if (sbError) throw sbError;
+
+    return jsonResponse({ ok: true }, 200, env);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : JSON.stringify(err);
+    console.error("Embed delete failed:", msg);
+    return jsonResponse({ error: msg }, 500, env);
+  }
+}
 
 function jsonResponse(data: unknown, status: number, env: Env): Response {
   return new Response(JSON.stringify(data), {

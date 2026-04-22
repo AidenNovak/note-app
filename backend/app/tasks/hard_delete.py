@@ -78,6 +78,22 @@ async def _purge_user(db: AsyncSession, user: User) -> None:
     # 3. Note-scoped children (embeddings, tasks, versions, tags, attachments).
     note_ids = (await db.execute(select(Note.id).where(Note.user_id == uid))).scalars().all()
     if note_ids:
+        # Remove Vectorize embeddings (best-effort — Worker handles idempotency)
+        import os, httpx
+        worker_url = os.environ.get("WORKER_INSIGHTS_URL", "")
+        worker_key = os.environ.get("WORKER_API_KEY", "")
+        if worker_url and worker_key:
+            async with httpx.AsyncClient(timeout=10) as client:
+                for nid in note_ids:
+                    try:
+                        await client.delete(
+                            f"{worker_url}/embed/{nid}",
+                            headers={"X-Worker-Api-Key": worker_key},
+                            params={"user_id": uid},
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception("vectorize_delete_failed", note_id=nid)
+
         await db.execute(delete(NoteEmbedding).where(NoteEmbedding.note_id.in_(note_ids)))
         await db.execute(delete(ProcessingTask).where(ProcessingTask.note_id.in_(note_ids)))
         await db.execute(delete(NoteVersion).where(NoteVersion.note_id.in_(note_ids)))
