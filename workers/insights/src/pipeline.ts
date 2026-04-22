@@ -327,7 +327,9 @@ async function generateSingleReport(
   });
 
   try {
-    const model = agent.getModel();
+    // Use capable (reasoning) model for report streaming so <think> blocks appear
+    const reportModel = agent.getCapableModel();
+    const fastModel = agent.getModel();
 
     const systemPrompt = `You are an insight analyst. Write a deep, evidence-based insight report in markdown.
 
@@ -344,7 +346,7 @@ Requirements:
 - Tone: thoughtful, reflective, slightly challenging`;
 
     const streamResult = await streamText({
-      model,
+      model: reportModel,
       system: systemPrompt,
       prompt: `Analyze these notes and write the report:\n\n${notesContent}`,
       // maxSteps removed: not supported in ai v6
@@ -384,7 +386,7 @@ Return JSON with this exact shape:
     let extraction;
     try {
       const { text: extractionText } = await generateText({
-        model,
+        model: fastModel,
         system: extractionSystem,
         prompt: `Report markdown:\n\n${markdown.slice(0, 8000)}`,
       });

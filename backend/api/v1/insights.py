@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
@@ -19,6 +20,7 @@ from app.intelligence.insights.share_cards import render_share_card_png
 from app.models import InsightGeneration, TaskStatus, User
 from app.schemas import InsightDetailOut, InsightGenerationOut, InsightOut, StatusResponse
 from app.intelligence.insights.service import (
+    _check_db_events_available,
     build_terminal_event,
     build_report_detail,
     broadcast_log,
@@ -69,11 +71,40 @@ async def stream_generation_logs(
             return
 
         queue = await subscribe_to_generation(generation_id, db=db, after_sequence=last_sequence)
+        db_sequence = last_sequence  # tracks last delivered sequence from insight_events table
         try:
             while True:
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=STREAM_STATUS_POLL_INTERVAL_SECONDS)
+                    yield f"data: {json.dumps(event)}\n\n"
+                    if event.get("type") in ("completed", "error"):
+                        break
                 except asyncio.TimeoutError:
+                    # ── Poll insight_events for Worker-written lifecycle events ──
+                    if await _check_db_events_available():
+                        try:
+                            from app.intelligence.insights.event_store import get_events
+                            async with async_session() as inner_db:
+                                new_events = await get_events(inner_db, generation_id, after_sequence=db_sequence)
+                            found_terminal = False
+                            for ev in new_events:
+                                try:
+                                    payload = json.loads(ev.payload_json)
+                                except json.JSONDecodeError:
+                                    payload = {"type": ev.event_type}
+                                db_sequence = ev.sequence
+                                yield f"data: {json.dumps(payload)}\n\n"
+                                if payload.get("type") in ("completed", "error"):
+                                    found_terminal = True
+                                    break
+                            if new_events:
+                                if found_terminal:
+                                    return
+                                continue  # got events, loop without generation status check
+                        except Exception as exc:
+                            logger.debug("DB event poll failed: %s", exc)
+
+                    # ── Fallback: check generation status ──
                     # Use a fresh DB session because the injected session may be closed
                     # while the streaming response is active.
                     async with async_session() as inner_db:
@@ -86,12 +117,10 @@ async def stream_generation_logs(
                         refreshed = result.scalar_one_or_none()
                         if refreshed is None:
                             continue
-                        terminal_event = build_terminal_event(refreshed)
-                        if terminal_event is None:
+                        term = build_terminal_event(refreshed)
+                        if term is None:
                             continue
-                        event = terminal_event
-                yield f"data: {json.dumps(event)}\n\n"
-                if event.get("type") in ("completed", "error"):
+                    yield f"data: {json.dumps(term)}\n\n"
                     break
         finally:
             unsubscribe_from_generation(generation_id, queue)
@@ -122,17 +151,51 @@ async def get_latest_insight_generation(
 @router.get("/{insight_id}/share-card.png")
 async def download_insight_share_card(
     insight_id: str,
+    request: Request,
     db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_current_user),
 ):
-    report = await get_report(db, current_user.id, insight_id)
+    """Render share card as PNG.
+
+    Accepts two auth modes:
+    - Normal: JWT bearer token (iOS client)
+    - Internal: X-Worker-Api-Key header (Cloudflare Worker callback)
+    """
+    from app.models import InsightReport
+    from sqlalchemy.orm import selectinload
+
+    worker_api_key = os.environ.get("WORKER_API_KEY", "")
+    incoming_key = request.headers.get("X-Worker-Api-Key", "")
+    is_worker_request = bool(worker_api_key and incoming_key == worker_api_key)
+
+    if is_worker_request:
+        # Worker has no JWT — fetch by report ID only (no user scope)
+        result = await db.execute(
+            select(InsightReport)
+            .options(
+                selectinload(InsightReport.evidence_items),
+                selectinload(InsightReport.action_items),
+                selectinload(InsightReport.generation),
+            )
+            .where(InsightReport.id == insight_id)
+        )
+        report = result.scalar_one_or_none()
+    else:
+        if current_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail={"error": {"code": "UNAUTHORIZED", "message": "Authentication required"}},
+            )
+        report = await get_report(db, current_user.id, insight_id)
+
     if report is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"error": {"code": "INSIGHT_NOT_FOUND", "message": "Insight report not found"}},
         )
 
-    detail = await build_report_detail(db, current_user.id, report)
+    user_id_for_detail = report.user_id if is_worker_request else current_user.id
+    detail = await build_report_detail(db, user_id_for_detail, report)
     image_bytes = await run_in_threadpool(render_share_card_png, detail.share_card)
     safe_name = "".join(char if char.isascii() and char.isalnum() else "_" for char in detail.title).strip("_") or "insight"
     return Response(
@@ -185,7 +248,13 @@ async def _background_generate(generation_id: str) -> None:
 
 
 async def _background_generate_via_worker(generation_id: str, worker_url: str) -> None:
-    """Delegate generation to Cloudflare Worker."""
+    """Delegate generation to Cloudflare Worker.
+
+    Passes the FastAPI-created generation_id so both systems operate on the
+    same DB record. The Worker marks it COMPLETED when the pipeline finishes,
+    which the FastAPI SSE endpoint detects via status polling.
+    """
+    worker_api_key = os.environ.get("WORKER_API_KEY", "")
     async with async_session() as db:
         generation = await db.get(InsightGeneration, generation_id)
         if generation is None:
@@ -196,17 +265,18 @@ async def _background_generate_via_worker(generation_id: str, worker_url: str) -
         try:
             import httpx
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # Call Worker to trigger generation
                 resp = await client.post(
                     f"{worker_url}/api/v1/insights/generate",
-                    json={"user_id": user_id},
-                    headers={"Content-Type": "application/json"},
+                    json={"user_id": str(user_id), "generation_id": generation_id},
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Worker-Api-Key": worker_api_key,
+                    },
                 )
                 resp.raise_for_status()
-                worker_result = resp.json()
                 logger.info(
-                    "Worker generation started: generation=%s worker_gen=%s",
-                    generation_id, worker_result.get("id")
+                    "Worker generation started for generation %s",
+                    generation_id,
                 )
 
             # Mark local generation as processing
@@ -226,43 +296,22 @@ async def _background_generate_via_worker(generation_id: str, worker_url: str) -
 
 
 async def _background_generate_local(generation_id: str) -> None:
-    """Local pipeline (legacy fallback)."""
+    """Local pipeline — archived. Set WORKER_INSIGHTS_URL to use the Cloudflare Worker."""
     async with async_session() as db:
         generation = await db.get(InsightGeneration, generation_id)
         if generation is None:
             return
-        user_id = generation.user_id
-
-        try:
-            from app.intelligence.insights.pipeline import run_pipeline
-            from app.notifications.triggers import notify_insight_ready
-
-            generation.status = TaskStatus.PROCESSING
-            generation.workflow_version = "parallel-v1"
-            await db.commit()
-
-            await run_pipeline(db, generation)
-
-            # Notify user that insight is ready (only if succeeded)
-            async with async_session() as notify_db:
-                notify_gen = await notify_db.get(InsightGeneration, generation_id)
-                if notify_gen is not None and notify_gen.status == TaskStatus.COMPLETED:
-                    await notify_insight_ready(
-                        user_id, generation_id,
-                        notify_gen.summary or "你的洞察分析已完成",
-                    )
-        except Exception as exc:
-            logger.exception("Insight pipeline failed for %s", generation_id)
-            async with async_session() as err_db:
-                generation = await err_db.get(InsightGeneration, generation_id)
-                if generation is not None:
-                    generation.status = TaskStatus.FAILED
-                    generation.error = str(exc)[:500]
-                    generation.is_active = False
-                    generation.completed_at = datetime.now(timezone.utc)
-                    await err_db.commit()
-                    await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
-            clear_generation_buffers(generation_id)
+        msg = (
+            "Local FastAPI pipeline has been archived. "
+            "Set the WORKER_INSIGHTS_URL environment variable to delegate to the Cloudflare Worker."
+        )
+        logger.error("_background_generate_local called but pipeline is archived: %s", generation_id)
+        generation.status = TaskStatus.FAILED
+        generation.error = msg
+        generation.is_active = False
+        generation.completed_at = datetime.now(timezone.utc)
+        await db.commit()
+        await broadcast_log(generation_id, {"type": "error", "message": msg})
 
 
 @router.post("/generate", response_model=InsightGenerationOut, status_code=status.HTTP_202_ACCEPTED)
@@ -307,32 +356,18 @@ async def chat_with_insight_agent(
 ):
     """Send a follow-up message to the insight agent.
 
-    The agent processes the message asynchronously and broadcasts response
-    events to the SSE stream. Clients should listen to the stream endpoint
-    to receive replies.
+    Chat is now handled by the Cloudflare Worker via WebSocket.
+    Connect to wss://<worker-url>/agents/InsightAgent/<generation_id>
     """
-    result = await db.execute(
-        select(InsightGeneration).where(
-            InsightGeneration.id == generation_id,
-            InsightGeneration.user_id == current_user.id,
-        )
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail={
+            "error": {
+                "code": "MIGRATED_TO_WORKER",
+                "message": "Chat is now handled by the Cloudflare Worker. Connect via WebSocket.",
+            }
+        },
     )
-    generation = result.scalar_one_or_none()
-    if generation is None:
-        raise HTTPException(status_code=404, detail={"error": {"code": "GENERATION_NOT_FOUND", "message": "Generation not found"}})
-
-    if generation.status != TaskStatus.COMPLETED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"error": {"code": "AGENT_NOT_READY", "message": "报告尚未生成完成，无法交互。"}},
-        )
-
-    from app.intelligence.insights.agent import InsightAgent
-
-    agent = await InsightAgent.load(generation_id, db)
-    await agent.on_chat_message(body.message)
-
-    return {"status": "ok"}
 
 
 @router.post("/generations/{generation_id}/regenerate", response_model=StatusResponse)
@@ -342,45 +377,20 @@ async def regenerate_insight_angle(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Regenerate a specific angle report with an optional instruction."""
-    result = await db.execute(
-        select(InsightGeneration).where(
-            InsightGeneration.id == generation_id,
-            InsightGeneration.user_id == current_user.id,
-        )
+    """Regenerate a specific angle report.
+
+    Regeneration is now handled by the Cloudflare Worker.
+    Connect via WebSocket to wss://<worker-url>/agents/InsightAgent/<generation_id>
+    """
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail={
+            "error": {
+                "code": "MIGRATED_TO_WORKER",
+                "message": "Regeneration is now handled by the Cloudflare Worker. Connect via WebSocket.",
+            }
+        },
     )
-    generation = result.scalar_one_or_none()
-    if generation is None:
-        raise HTTPException(status_code=404, detail={"error": {"code": "GENERATION_NOT_FOUND", "message": "Generation not found"}})
-
-    if generation.status != TaskStatus.COMPLETED:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail={"error": {"code": "AGENT_NOT_READY", "message": "报告尚未生成完成，无法重新生成。"}},
-        )
-
-    from app.intelligence.insights.agent import InsightAgent
-
-    agent = await InsightAgent.load(generation_id, db)
-
-    # Restore workspace
-    reports = agent.workspace.get("reports", [])
-    if body.angle_index >= len(reports):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": {"code": "INVALID_ANGLE", "message": "角度索引超出范围。"}},
-        )
-
-    report_data = reports[body.angle_index]
-    report = report_data.get("report", {})
-
-    # Build a synthetic "deepen" message
-    instruction = body.instruction or "请重新分析这个角度，给出更深入或不同视角的洞察。"
-    message = f"深化第 {body.angle_index + 1} 个角度：{report.get('title', '')}。{instruction}"
-
-    await agent.on_chat_message(message)
-
-    return {"status": "ok"}
 
 
 # ── Resume endpoint (deprecated — pipeline no longer pauses) ──

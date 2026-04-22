@@ -77,6 +77,11 @@ export class InsightAgent extends Think<Env, AgentConfig> {
     return createWorkersAI({ binding: this.env.AI })(modelId);
   }
 
+  /** Returns the capable (reasoning) model — used only for report generation. */
+  getCapableModel(): LanguageModel {
+    return createWorkersAI({ binding: this.env.AI })(this.env.INSIGHTS_AI_MODEL);
+  }
+
   getSystemPrompt(): string {
     const config = this.getConfig();
     const persona =
