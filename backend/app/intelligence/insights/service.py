@@ -31,7 +31,7 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
-WORKFLOW_VERSION = "clustered-v1"
+WORKFLOW_VERSION = "parallel-v1"
 STALE_PENDING_TIMEOUT = timedelta(seconds=45)
 STALE_PROCESSING_TIMEOUT = timedelta(minutes=20)
 
@@ -195,9 +195,12 @@ def _update_delta_snapshots(generation_id: str, event: dict[str, object]) -> Non
 async def broadcast_log(generation_id: str, event: dict[str, object]) -> None:
     """Broadcast an event to all subscribers and persist it.
 
-    Phase 1 behaviour:
-    1. Always update the legacy in-memory structures (backward compat).
-    2. If the DB event store is available, also persist to ``insight_events``.
+    Optimized streaming path:
+    - High-frequency delta events (thinking_delta, markdown_delta) are broadcast
+      to memory queues ONLY — no DB write. This keeps latency minimal so the
+      client sees smooth, real-time token streaming.
+    - Key lifecycle events (starting, group_started, group_completed, completed,
+      error) are persisted to DB for replay and crash recovery.
     """
     event_type = event.get("type")
 
@@ -209,10 +212,15 @@ async def broadcast_log(generation_id: str, event: dict[str, object]) -> None:
     elif event_type not in HIGH_FREQ_EVENT_TYPES:
         _event_buffers[generation_id].append(event)
 
+    # ── Fast memory broadcast (hot path) ──
     for queue in _log_queues.get(generation_id, []):
         await queue.put(event)
 
-    # ── DB persistence (best-effort) ──
+    # ── Skip DB for high-frequency deltas ──
+    if event_type in HIGH_FREQ_EVENT_TYPES:
+        return
+
+    # ── DB persistence for key events (best-effort) ──
     if await _check_db_events_available():
         try:
             from app.intelligence.insights.event_store import append_event

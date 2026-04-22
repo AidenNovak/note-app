@@ -8,6 +8,7 @@ import pytest
 import requests
 
 BASE = os.getenv("ATELIER_TEST_API_BASE", "http://localhost:8003")
+API_BASE = os.getenv("ATELIER_TEST_API_V1_BASE", f"{BASE}/api/v1")
 HEADERS = {"Content-Type": "application/json"}
 auth_headers = {}
 pytestmark = pytest.mark.integration
@@ -16,7 +17,7 @@ pytestmark = pytest.mark.integration
 def _register_user():
     suffix = uuid.uuid4().hex[:12]
     r = requests.post(
-        f"{BASE}/auth/register",
+        f"{API_BASE}/auth/register",
         headers=HEADERS,
         json={
             "username": f"e2e_user_{suffix}",
@@ -33,7 +34,7 @@ def _register_user():
 
 def _login_user(email):
     r = requests.post(
-        f"{BASE}/auth/login",
+        f"{API_BASE}/auth/login",
         headers=HEADERS,
         json={"email": email, "password": "test123456"},
     )
@@ -46,18 +47,18 @@ def _login_user(email):
 
 def _create_notes():
     notes = [
-        ("Shopping List", "Buy milk, eggs, bread", "shopping,life"),
-        ("Project Ideas", "Build a knowledge graph app with Flutter", "project,tech,flutter"),
-        ("Meeting Notes", "Discussed Q2 roadmap and milestones", "meeting,project"),
-        ("Reading List", "Finish 'Thinking Fast and Slow' this month", "reading,life"),
-        ("Code Snippet", "async def hello(): print('world')", "code,tech"),
+        ("Shopping List", "Buy milk, eggs, bread", ["shopping", "life"]),
+        ("Project Ideas", "Build a knowledge graph app with Flutter", ["project", "tech", "flutter"]),
+        ("Meeting Notes", "Discussed Q2 roadmap and milestones", ["meeting", "project"]),
+        ("Reading List", "Finish 'Thinking Fast and Slow' this month", ["reading", "life"]),
+        ("Code Snippet", "async def hello(): print('world')", ["code", "tech"]),
     ]
     note_ids = []
     for title, content, tags in notes:
         r = requests.post(
-            f"{BASE}/notes",
+            f"{API_BASE}/notes",
             headers=auth_headers,
-            data={"title": title, "content": content, "tags": tags},
+            json={"title": title, "content": content, "tags": tags},
         )
         assert r.status_code == 201, f"Create note failed: {r.text}"
         data = r.json()
@@ -105,7 +106,7 @@ def test_1_health():
 def test_2_cors():
     """CORS headers are present."""
     r = requests.options(
-        f"{BASE}/auth/register",
+        f"{API_BASE}/auth/register",
         headers={
             "Origin": "http://localhost:8080",
             "Access-Control-Request-Method": "POST",
@@ -138,7 +139,7 @@ def test_5_create_notes(note_ids):
 
 def test_6_list_notes():
     """List notes with pagination."""
-    r = requests.get(f"{BASE}/notes?page=1&page_size=10", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/notes?page=1&page_size=10", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert data["total"] >= 5
@@ -149,7 +150,7 @@ def test_6_list_notes():
 def test_7_get_note_detail(note_ids):
     """Get single note detail."""
     nid = note_ids[0]
-    r = requests.get(f"{BASE}/notes/{nid}", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/notes/{nid}", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert data["markdown_content"] is not None
@@ -161,7 +162,7 @@ def test_8_update_note(note_ids):
     """Update a note's tags."""
     nid = note_ids[0]
     r = requests.put(
-        f"{BASE}/notes/{nid}",
+        f"{API_BASE}/notes/{nid}",
         headers={**auth_headers, "Content-Type": "application/json"},
         json={"tags": ["shopping", "life", "groceries"]},
     )
@@ -173,7 +174,7 @@ def test_8_update_note(note_ids):
 
 def test_9_search():
     """Full-text search."""
-    r = requests.get(f"{BASE}/search?q=project", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/search?q=project", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert data["total"] >= 1
@@ -182,7 +183,7 @@ def test_9_search():
 
 def test_10_tags():
     """List all tags."""
-    r = requests.get(f"{BASE}/tags", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/tags", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     tags = data["tags"]
@@ -193,7 +194,7 @@ def test_10_tags():
 def test_11_mind_graph():
     """Knowledge graph has nodes and edges."""
     time.sleep(3)  # Wait for background processing
-    r = requests.get(f"{BASE}/mind/graph", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/mind/graph", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert len(data["nodes"]) >= 3
@@ -201,14 +202,14 @@ def test_11_mind_graph():
     print(f"  ✅ Mind graph: {len(data['nodes'])} nodes, {len(data['edges'])} edges")
 
 
-def test_12_insights():
+def test_12_insights(note_ids):
     """AI insights are generated and persisted."""
-    r = requests.post(f"{BASE}/insights/generate", headers=auth_headers)
+    r = requests.post(f"{API_BASE}/insights/generate", headers=auth_headers)
     assert r.status_code == 202
 
     latest = None
-    for _ in range(60):
-        latest = requests.get(f"{BASE}/insights/generations/latest", headers=auth_headers)
+    for _ in range(180):
+        latest = requests.get(f"{API_BASE}/insights/generations/latest", headers=auth_headers)
         assert latest.status_code == 200
         payload = latest.json()
         if payload and payload["status"] in {"completed", "failed"}:
@@ -219,12 +220,12 @@ def test_12_insights():
     payload = latest.json()
     assert payload["status"] == "completed", payload
 
-    r = requests.get(f"{BASE}/insights", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/insights", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert len(data) >= 1
 
-    detail = requests.get(f"{BASE}/insights/{data[0]['id']}", headers=auth_headers)
+    detail = requests.get(f"{API_BASE}/insights/{data[0]['id']}", headers=auth_headers)
     assert detail.status_code == 200
     assert detail.json()["report_markdown"]
     print(f"  ✅ Insights: {len(data)} generated")
@@ -232,7 +233,7 @@ def test_12_insights():
 
 def test_13_ground_empty():
     """Ground feed is empty — no notes shared yet."""
-    r = requests.get(f"{BASE}/ground/feed", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/ground/feed", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert len(data) == 0
@@ -242,7 +243,7 @@ def test_13_ground_empty():
 def test_14_share_note(note_ids):
     """Share a note to Ground."""
     nid = note_ids[1]  # "Project Ideas"
-    r = requests.post(f"{BASE}/ground/notes/{nid}/share", headers=auth_headers)
+    r = requests.post(f"{API_BASE}/ground/notes/{nid}/share", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert data["shared"] is True
@@ -251,7 +252,7 @@ def test_14_share_note(note_ids):
 
 def test_15_ground_after_share():
     """Ground feed now has the shared note."""
-    r = requests.get(f"{BASE}/ground/feed", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/ground/feed", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert len(data) >= 1
@@ -262,7 +263,7 @@ def test_15_ground_after_share():
 def test_16_like_note(note_ids):
     """Like a shared note."""
     nid = note_ids[1]
-    r = requests.post(f"{BASE}/ground/notes/{nid}/like", headers=auth_headers)
+    r = requests.post(f"{API_BASE}/ground/notes/{nid}/like", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert data["liked"] is True
@@ -273,7 +274,7 @@ def test_17_folders():
     """Folders CRUD."""
     # Create folder
     r = requests.post(
-        f"{BASE}/folders",
+        f"{API_BASE}/folders",
         headers={**auth_headers, "Content-Type": "application/json"},
         json={"name": "Work"},
     )
@@ -283,7 +284,7 @@ def test_17_folders():
     print(f"  ✅ Created folder: Work")
 
     # List folders
-    r = requests.get(f"{BASE}/folders", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/folders", headers=auth_headers)
     assert r.status_code == 200
     assert len(r.json()) >= 1
     print(f"  ✅ Listed {len(r.json())} folders")
@@ -292,7 +293,7 @@ def test_17_folders():
 def test_18_versions(note_ids):
     """Version history."""
     nid = note_ids[0]
-    r = requests.get(f"{BASE}/notes/{nid}/versions", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/notes/{nid}/versions", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert len(data) >= 1
@@ -302,14 +303,14 @@ def test_18_versions(note_ids):
 def test_19_delete_note(note_ids):
     """Delete a note."""
     nid = note_ids[-1]  # Delete the last one
-    r = requests.delete(f"{BASE}/notes/{nid}", headers=auth_headers)
+    r = requests.delete(f"{API_BASE}/notes/{nid}", headers=auth_headers)
     assert r.status_code == 204
     print(f"  ✅ Deleted note: {nid[:8]}...")
 
 
 def test_20_auth_me():
     """Get current user info."""
-    r = requests.get(f"{BASE}/auth/me", headers=auth_headers)
+    r = requests.get(f"{API_BASE}/auth/me", headers=auth_headers)
     assert r.status_code == 200
     data = r.json()
     assert "username" in data

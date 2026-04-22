@@ -23,6 +23,7 @@ except ImportError:
     OpenAIModel = None
     _HAS_AI_SDK = False
 import openai as _openai_lib
+from openai import AsyncOpenAI
 from pydantic import BaseModel
 
 from app.config import settings
@@ -80,6 +81,22 @@ def get_insights_model() -> LanguageModel:
     Falls back to ``AI_MODEL`` when ``INSIGHTS_AI_MODEL`` is empty.
     """
     return get_model(model_name=settings.INSIGHTS_AI_MODEL or settings.AI_MODEL)
+
+
+# ── Async client (for true async streaming) ────────────
+
+_async_client: AsyncOpenAI | None = None
+
+
+def get_async_client() -> AsyncOpenAI:
+    """Return a shared AsyncOpenAI client for OpenRouter."""
+    global _async_client
+    if _async_client is None:
+        _async_client = AsyncOpenAI(
+            api_key=settings.OPENROUTER_API_KEY,
+            base_url=settings.OPENROUTER_BASE_URL,
+        )
+    return _async_client
 
 
 def _resolve_model_id(model: LanguageModel, default: str) -> str:
@@ -461,6 +478,94 @@ async def _stream_text_result(
             await task
 
 
+async def stream_text_async(
+    *,
+    system: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    model_name: str | None = None,
+    on_delta=None,
+) -> GeneratedTextResult:
+    """True async streaming using AsyncOpenAI.
+
+    No threads, no queues — ``async for chunk`` directly on the HTTP response.
+    Deltas are forwarded to ``on_delta`` immediately with minimal overhead.
+    """
+    client = get_async_client()
+    model_id = model_name or settings.AI_MODEL
+
+    payload: dict[str, Any] = {
+        "model": model_id,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "stream": True,
+        "stream_options": {"include_usage": True},
+        "extra_body": {"reasoning": {"enabled": True}},
+    }
+
+    splitter = _ThinkBlockSplitter()
+    full_content: list[str] = []
+    full_reasoning: list[str] = []
+    finish_reason: str | None = None
+    usage: Any = None
+
+    stream = await client.chat.completions.create(**payload)
+    async for chunk in stream:
+        chunk_usage = getattr(chunk, "usage", None)
+        if chunk_usage is not None:
+            usage = chunk_usage
+        if not getattr(chunk, "choices", None):
+            continue
+        choice = chunk.choices[0]
+        if getattr(choice, "finish_reason", None):
+            finish_reason = choice.finish_reason
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+
+        reasoning_explicit = (
+            getattr(delta, "reasoning", None)
+            or getattr(delta, "reasoning_content", None)
+            or ""
+        )
+        content_raw = getattr(delta, "content", None) or ""
+        content_part, reasoning_inline = splitter.feed(content_raw)
+        reasoning_total = (reasoning_explicit or "") + reasoning_inline
+
+        if content_part:
+            full_content.append(content_part)
+        if reasoning_total:
+            full_reasoning.append(reasoning_total)
+        if on_delta and (content_part or reasoning_total):
+            if asyncio.iscoroutinefunction(on_delta):
+                await on_delta(content_part, reasoning_total)
+            else:
+                on_delta(content_part, reasoning_total)
+
+    flushed_content, flushed_reasoning = splitter.flush()
+    if flushed_content:
+        full_content.append(flushed_content)
+    if flushed_reasoning:
+        full_reasoning.append(flushed_reasoning)
+    if on_delta and (flushed_content or flushed_reasoning):
+        if asyncio.iscoroutinefunction(on_delta):
+            await on_delta(flushed_content, flushed_reasoning)
+        else:
+            on_delta(flushed_content, flushed_reasoning)
+
+    return GeneratedTextResult(
+        text="".join(full_content),
+        reasoning="".join(full_reasoning),
+        finish_reason=finish_reason,
+        usage=usage,
+    )
+
+
 # ── Response format builders (strict=False; schema acts as guidance,
 #    parser handles minor drift). ───────────────────────
 
@@ -564,6 +669,79 @@ async def discover_angles(
 
     logger.info("discover_angles: text_len=%d, usage=%s", len(result.text), result.usage)
     return _parse_to_model(result.text, AngleListOutput)
+
+
+# ── Dynamic Angle Discovery (new parallel pipeline) ────
+
+ANGLE_DISCOVERY_FROM_NOTES_SYSTEM = """\
+你是一位洞察分析师。分析用户的笔记内容，发现最有价值的分析角度。
+
+要求：
+1. **基于笔记实际内容**选择角度，不要套用固定框架。
+2. 角度要有**差异性**——每个角度应该探索不同的维度，避免重复。
+3. 根据笔记数量和内容的丰富程度，动态决定角度数量：
+   - 内容丰富、涉及多个领域 → 3-4 个角度
+   - 内容较单一 → 2 个角度
+   - 笔记很少（<5 条）→ 1-2 个角度
+4. 每个角度包含：
+   - angle_name: 角度名称，2-6 个字，简洁有力
+   - description: 1-2 句话，说明这个角度要探索什么问题
+   - type_hint: 报告类型，可选值：pattern | connection | gap | trend | synthesis
+5. 优先发现**非显而易见**的洞察角度，不要只停留在表面总结。
+6. 如果笔记缺乏时间信息，不要硬凑 trend 角度。
+7. 用中文输出。
+"""
+
+
+async def discover_angles_from_notes(
+    *,
+    notes_content: str,
+    note_count: int,
+    model: LanguageModel | None = None,
+) -> AngleListOutput:
+    """Discover analysis angles directly from raw notes (no clustering).
+
+    Lightweight phase-0 call: fast, no streaming, limited tokens.
+    Falls back to default angles if discovery fails.
+    """
+    model = model or get_model()
+    system = ANGLE_DISCOVERY_FROM_NOTES_SYSTEM
+
+    prompt = (
+        f"# 用户笔记（共 {note_count} 条）\n\n"
+        f"{notes_content}\n\n"
+        f"# 任务\n"
+        f"基于以上笔记内容，发现最有价值的分析角度。"
+    )
+
+    try:
+        result = await _generate_text_result(
+            model=model,
+            system=system,
+            prompt=prompt,
+            max_tokens=1200,
+            temperature=0.7,
+            response_format=_ANGLES_RESPONSE_FORMAT,
+        )
+        if not result.text:
+            raise RuntimeError("Angle discovery returned empty")
+
+        parsed = _parse_to_model(result.text, AngleListOutput)
+        # Validate: at least 1 angle, at most 4
+        if not parsed.angles:
+            raise RuntimeError("No angles discovered")
+        if len(parsed.angles) > 4:
+            parsed.angles = parsed.angles[:4]
+
+        logger.info(
+            "discover_angles_from_notes: %d angles, usage=%s",
+            len(parsed.angles), result.usage,
+        )
+        return parsed
+
+    except Exception as exc:
+        logger.warning("Angle discovery failed, will use fallback: %s", exc)
+        raise
 
 
 # ── Clustered Pipeline: Per-Angle Report Generation ────
@@ -706,8 +884,7 @@ async def write_report_markdown(
                 "text": content,
             })
 
-    result = await _stream_text_result(
-        model=model,
+    result = await stream_text_async(
         system=system,
         prompt=notes_content,
         max_tokens=settings.AI_MAX_TOKENS,
