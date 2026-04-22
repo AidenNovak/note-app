@@ -867,6 +867,59 @@ def _fallback_extraction(
     )
 
 
+# ── Visual theme colors for insight groups ──
+
+_GROUP_COLORS = [
+    {"accent": "#2d5a3d", "bg": "#f0f7f2"},   # Forest
+    {"accent": "#1a4a8c", "bg": "#f0f4fa"},   # Ocean
+    {"accent": "#8b6914", "bg": "#faf6f0"},   # Sand
+    {"accent": "#5b2d8e", "bg": "#f6f0fa"},   # Plum
+]
+
+
+def _get_group_color(group_index: int) -> dict[str, str]:
+    """Return visual theme color for a group (1-based index)."""
+    return _GROUP_COLORS[(group_index - 1) % len(_GROUP_COLORS)]
+
+
+class _ThinkingQuoteFormatter:
+    """Convert streaming <think> reasoning into markdown quote blocks.
+
+    Tracks think start/end and produces ``> `` prefixed lines with
+    decorative headers so iOS ``StreamingMarkdown`` renders them as
+    grey blockquotes.
+    """
+
+    def __init__(self) -> None:
+        self.in_think = False
+        self.first_think = True
+
+    def format_delta(self, content: str, reasoning: str) -> str:
+        """Return a single display string combining quoted reasoning + content."""
+        parts: list[str] = []
+
+        if reasoning:
+            if not self.in_think:
+                self.in_think = True
+                prefix = (
+                    "\n\n> **🧠 思考中...**\n> "
+                    if self.first_think
+                    else "\n\n> **💭 继续思考...**\n> "
+                )
+                self.first_think = False
+                parts.append(prefix)
+            parts.append(reasoning.replace("\n", "\n> "))
+
+        if content and self.in_think:
+            self.in_think = False
+            parts.append("\n\n")
+            parts.append(content)
+        elif content:
+            parts.append(content)
+
+        return "".join(parts)
+
+
 async def write_report_markdown(
     *,
     angle_name: str,
@@ -887,18 +940,22 @@ async def write_report_markdown(
         type_hint=type_hint,
     )
 
+    formatter = _ThinkingQuoteFormatter()
+
     async def on_delta(content: str, reasoning: str) -> None:
+        display = formatter.format_delta(content, reasoning)
+        if display:
+            await broadcast_log(generation_id, {
+                "type": "markdown_delta",
+                "group": group_index,
+                "text": display,
+            })
+        # Keep backward-compat thinking_delta for existing clients
         if reasoning:
             await broadcast_log(generation_id, {
                 "type": "thinking_delta",
                 "group": group_index,
                 "text": reasoning,
-            })
-        if content:
-            await broadcast_log(generation_id, {
-                "type": "markdown_delta",
-                "group": group_index,
-                "text": content,
             })
 
     result = await stream_text_async(

@@ -1,0 +1,28 @@
+{
+  "name": "@truth-truth/insights-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite dev",
+    "deploy": "vite build && wrangler deploy",
+    "types": "wrangler types env.d.ts --include-runtime false",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/ai-chat": "^0.1.0",
+    "@cloudflare/think": "^0.1.0",
+    "@supabase/supabase-js": "^2.49.0",
+    "agents": "^0.9.0",
+    "ai": "^6.0.168",
+    "workers-ai-provider": "^3.1.11",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.33.0",
+    "@cloudflare/workers-types": "^4.20260420.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.9",
+    "wrangler": "^4.84.0"
+  }
+}

@@ -1,25 +1,28 @@
-"""InsightAgent — lightweight stateful agent for insight generation.
+"""InsightAgent — Think-aligned stateful agent for insight generation.
 
-Inspired by Cloudflare Agents. The agent owns its workspace and event stream.
-It survives disconnections and can be loaded from the database for follow-up
-conversations.
+Architecturally aligned with Cloudflare's Think base class:
+  - configure_session()    →  sets up context blocks (soul, memory, workspace)
+  - before_turn()          →  called before each chat turn
+  - after_turn()           →  called after each chat turn
+  - before_tool_call()     →  called before tool execution
+  - after_tool_call()      →  called after tool execution
+  - get_tools()            →  returns the tool registry
+  - broadcast()            →  persists events to the event store
 
-Unlike the previous version, this agent does NOT use a state machine or
-step-based execution. The generation pipeline is a straightforward async
-function (see ``pipeline.py``). The agent's role is:
-
-  1. Broadcast events during generation
-  2. Persist workspace for crash recovery and conversation history
-  3. Handle follow-up chat messages after generation completes
+Unlike Think, this runs on FastAPI + SQLAlchemy (not Durable Objects),
+so workspace persistence is explicit via _persist_workspace().
 """
 from __future__ import annotations
 
 import json
 import logging
 import re
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.intelligence.insights.event_store import (
@@ -28,14 +31,129 @@ from app.intelligence.insights.event_store import (
     flush_events,
 )
 from app.intelligence.insights.tools import ALL_TOOLS
-from app.intelligence.insights.tools.base import Tool, ToolContext, ToolResult
+from app.intelligence.insights.tools.base import (
+    Tool,
+    ToolApprovalRequest,
+    ToolContext,
+    ToolResult,
+)
 from app.models import InsightGeneration, TaskStatus
 
 logger = logging.getLogger(__name__)
 
 
+# ── Think-aligned context primitives ──
+
+
+@dataclass
+class ContextBlock:
+    """A named context block, mirroring Think's ``withContext`` API.
+
+    Think uses context blocks to assemble the system prompt and give the
+    model persistent memory. Each block has:
+      label        →  namespace (e.g. "soul", "memory", "workspace")
+      description  →  shown to the model (for writable blocks)
+      content      →  current content
+      max_tokens   →  budget hint (not enforced here)
+      writable     →  whether the model can update this block
+    """
+
+    label: str
+    description: str = ""
+    content: str = ""
+    max_tokens: int = 0
+    writable: bool = False
+
+
+@dataclass
+class Session:
+    """Agent session state, aligned with Think's Session abstraction.
+
+    Holds context blocks and conversation history. The agent assembles the
+    full prompt from blocks + history on every turn.
+    """
+
+    blocks: dict[str, ContextBlock] = field(default_factory=dict)
+    conversation: list[dict[str, Any]] = field(default_factory=list)
+    max_conversation_messages: int = 40
+
+    def with_context(
+        self,
+        label: str,
+        description: str = "",
+        content: str = "",
+        max_tokens: int = 0,
+        writable: bool = False,
+    ) -> "Session":
+        """Add or replace a context block (fluent API)."""
+        self.blocks[label] = ContextBlock(
+            label=label,
+            description=description,
+            content=content,
+            max_tokens=max_tokens,
+            writable=writable,
+        )
+        return self
+
+    def get_block(self, label: str) -> ContextBlock | None:
+        return self.blocks.get(label)
+
+    def update_block(self, label: str, content: str) -> None:
+        if label in self.blocks:
+            self.blocks[label].content = content
+
+    def add_message(self, role: str, content: str) -> None:
+        self.conversation.append({
+            "role": role,
+            "content": content,
+            "ts": datetime.now(timezone.utc).isoformat(),
+        })
+        # Trim to max length
+        if len(self.conversation) > self.max_conversation_messages:
+            self.conversation = self.conversation[-self.max_conversation_messages :]
+
+    def build_prompt(self) -> str:
+        """Assemble system prompt from context blocks."""
+        parts: list[str] = []
+        for block in self.blocks.values():
+            header = f"### {block.label}"
+            if block.description:
+                header += f"\n{block.description}"
+            parts.append(f"{header}\n\n{block.content}")
+        return "\n\n---\n\n".join(parts)
+
+
+@dataclass
+class TurnContext:
+    """Context for a single agent turn, mirroring Think's TurnContext.
+
+    Passed to ``before_turn`` and ``after_turn`` hooks.
+    """
+
+    user_message: str
+    intent: str | None = None
+    tools_available: list[str] = field(default_factory=list)
+    continuation: bool = False
+
+
+@dataclass
+class TurnConfig:
+    """Optional overrides for a turn, mirroring Think's TurnConfig.
+
+    ``before_turn`` can return a TurnConfig to change behaviour for this
+    turn only.
+    """
+
+    active_tools: list[str] | None = None
+    system_prompt_addendum: str | None = None
+    max_steps: int | None = None
+
+
+# ── Agent ──
+
+
 class InsightAgent:
-    """Lightweight insight agent.
+    """Think-aligned lightweight insight agent.
 
     Usage (generation):
         agent = InsightAgent(generation_id, user_id, db)
@@ -46,7 +164,16 @@ class InsightAgent:
     Usage (chat after generation):
         agent = await InsightAgent.load(generation_id, db)
         await agent.on_chat_message(message)
+
+    Hooks (override in subclasses or monkey-patch):
+        configure_session(session)  →  add context blocks
+        before_turn(ctx)            →  inspect / mutate turn context
+        after_turn(ctx)             →  log / analyse completed turn
+        before_tool_call(tool, params, ctx)
+        after_tool_call(tool, params, ctx, result)
     """
+
+    max_steps: int = 10
 
     def __init__(
         self,
@@ -57,13 +184,19 @@ class InsightAgent:
         self.generation_id = generation_id
         self.user_id = user_id
         self.db = db
-        self.workspace: dict[str, Any] = {}
-        self.tools: dict[str, Tool] = {t.name: t for t in ALL_TOOLS}
+        self._tools: dict[str, Tool] = {t.name: t for t in ALL_TOOLS}
         self._sequence = 0
+
+        # Think-style session (assembled from workspace on restore)
+        self.session = Session()
+
+        # Legacy workspace dict — kept for backward compat.
+        # New code should prefer self.session.blocks[label].content
+        self.workspace: dict[str, Any] = {}
 
     @classmethod
     async def load(cls, generation_id: str, db: AsyncSession) -> "InsightAgent":
-        """Restore an agent from the database (workspace only)."""
+        """Restore an agent from the database (workspace + session)."""
         generation = await db.get(InsightGeneration, generation_id)
         if generation is None:
             raise ValueError(f"Generation {generation_id} not found")
@@ -76,11 +209,60 @@ class InsightAgent:
         await agent._restore_workspace()
         return agent
 
+    # ── Configuration (Think-style) ──
+
+    def configure_session(self, session: Session) -> Session:
+        """Configure the agent's session with context blocks.
+
+        Override this method (or monkey-patch) to add custom blocks.
+        Default blocks: soul, memory, workspace.
+
+        Mirrors Think's ``configureSession`` hook.
+        """
+        persona = (
+            "You are a capable insight analyst. You synthesise personal notes "
+            "into meaningful reports, spot patterns, connections, and trends. "
+            "You are concise, evidence-based, and always ground claims in the "
+            "user's own writing."
+        )
+
+        session.with_context(
+            "soul",
+            description="Your core identity and operating principles.",
+            content=persona,
+            writable=False,
+        ).with_context(
+            "memory",
+            description=(
+                "Key facts about the user, their preferences, project context, "
+                "and decisions made during conversation. Update when you learn "
+                "something useful for future turns."
+            ),
+            content=self.workspace.get("memory", ""),
+            max_tokens=2000,
+            writable=True,
+        ).with_context(
+            "workspace",
+            description="Current workspace state (reports, notes, conversation).",
+            content=json.dumps(self.workspace, ensure_ascii=False, default=str),
+            writable=False,
+        )
+        return session
+
+    def get_tools(self) -> dict[str, Tool]:
+        """Return the tool registry.
+
+        Mirrors Think's ``getTools()`` method. Override to add, remove, or
+        filter tools dynamically.
+        """
+        return self._tools
+
     # ── Lifecycle ──
 
     async def on_start(self) -> None:
         """Called when generation begins."""
         await self._restore_workspace()
+        self.session = self.configure_session(self.session)
         await self.broadcast({
             "type": "starting",
             "message": "Insight Agent 启动...",
@@ -102,13 +284,86 @@ class InsightAgent:
         await flush_events(self.db, self.generation_id)
         clear_buffers(self.generation_id)
 
+    # ── Turn hooks (Think-style) ──
+
+    async def before_turn(self, ctx: TurnContext) -> TurnConfig | None:
+        """Hook called before each chat turn.
+
+        Mirrors Think's ``beforeTurn`` lifecycle hook. Return a TurnConfig
+        to override tools, prompt, or max_steps for this turn only.
+        """
+        logger.debug(
+            "Turn starting for generation=%s: intent=%s tools=%s",
+            self.generation_id,
+            ctx.intent,
+            ctx.tools_available,
+        )
+        return None
+
+    async def after_turn(self, ctx: TurnContext) -> None:
+        """Hook called after each chat turn completes.
+
+        Mirrors Think's ``onChatResponse`` / ``after_turn`` hook.
+        """
+        logger.debug(
+            "Turn finished for generation=%s: intent=%s",
+            self.generation_id,
+            ctx.intent,
+        )
+
+    async def before_tool_call(self, tool: Tool, params: BaseModel, ctx: ToolContext) -> None:
+        """Hook called before a tool is executed.
+
+        Mirrors Think's ``beforeToolCall`` hook.
+        """
+        await self.broadcast({
+            "type": "tool_start",
+            "tool": tool.name,
+            "input": params.model_dump() if hasattr(params, "model_dump") else dict(params),
+        })
+
+    async def after_tool_call(
+        self, tool: Tool, params: BaseModel, ctx: ToolContext, result: ToolResult
+    ) -> None:
+        """Hook called after a tool finishes.
+
+        Mirrors Think's ``afterToolCall`` hook.
+        """
+        if result.success:
+            result_size = len(json.dumps(result.output, ensure_ascii=False, default=str)) if result.output is not None else 0
+            logger.info(
+                "Tool %s succeeded (%d bytes, %d ms)",
+                tool.name,
+                result_size,
+                result.duration_ms,
+            )
+        else:
+            logger.error(
+                "Tool %s failed (%d ms): %s",
+                tool.name,
+                result.duration_ms,
+                result.error,
+            )
+
+        await self.broadcast({
+            "type": "tool_finish",
+            "tool": tool.name,
+            "success": result.success,
+            "duration_ms": result.duration_ms,
+            "error": result.error[:200] if result.error else None,
+        })
+
     # ── Chat / follow-up (Phase 3) ──
 
     async def on_chat_message(self, message: str) -> None:
         """Handle user follow-up messages.
 
-        Classifies intent and dispatches to the appropriate handler.
-        All handlers broadcast events so the client can stream responses.
+        Think-aligned turn lifecycle:
+          1. Classify intent
+          2. before_turn(ctx)  →  optional TurnConfig overrides
+          3. Dispatch to handler
+          4. after_turn(ctx)
+          5. Persist workspace
         """
         # Append user message to conversation history
         self._add_to_conversation("user", message)
@@ -117,16 +372,33 @@ class InsightAgent:
         intent = self._classify_intent(message)
         await self.broadcast({"type": "decision", "stage": "intent_classified", "payload": {"intent": intent}})
 
-        if intent == "deepen":
-            await self._handle_deepen(message)
-        elif intent == "compare":
-            await self._handle_compare(message)
-        elif intent == "share_card":
-            await self._handle_share_card(message)
-        else:
-            await self._handle_question(message)
+        # Assemble turn context
+        turn_ctx = TurnContext(
+            user_message=message,
+            intent=intent,
+            tools_available=list(self._tools.keys()),
+            continuation=False,
+        )
 
-        await self._persist_workspace()
+        # before_turn hook
+        turn_config = await self.before_turn(turn_ctx)
+        active_tools = self._tools
+        if turn_config is not None and turn_config.active_tools is not None:
+            active_tools = {k: v for k, v in self._tools.items() if k in turn_config.active_tools}
+
+        try:
+            if intent == "deepen":
+                await self._handle_deepen(message, active_tools)
+            elif intent == "compare":
+                await self._handle_compare(message)
+            elif intent == "share_card":
+                await self._handle_share_card(message, active_tools)
+            else:
+                await self._handle_question(message)
+        finally:
+            # after_turn hook (always fires)
+            await self.after_turn(turn_ctx)
+            await self._persist_workspace()
 
     def _add_to_conversation(self, role: str, content: str) -> None:
         """Add a message to the conversation history (kept in workspace)."""
@@ -137,8 +409,8 @@ class InsightAgent:
             "content": content,
             "ts": datetime.now(timezone.utc).isoformat(),
         })
-        # Keep only the last 40 messages to prevent workspace bloat
-        self.workspace["conversation"] = self.workspace["conversation"][-40:]
+        # Keep only the last N messages to prevent workspace bloat
+        self.workspace["conversation"] = self.workspace["conversation"][-self.session.max_conversation_messages:]
 
     def _classify_intent(self, message: str) -> str:
         """Lightweight rule-based intent classification."""
@@ -158,18 +430,15 @@ class InsightAgent:
                 return "share_card"
         return "question"
 
-    async def _handle_deepen(self, message: str) -> None:
+    async def _handle_deepen(self, message: str, active_tools: dict[str, Tool] | None = None) -> None:
         """Deepen analysis on a specific angle."""
         angle_idx = self._extract_angle_index(message)
         reports = self.workspace.get("reports", [])
 
         if angle_idx is None or angle_idx >= len(reports):
-            await self.broadcast({
-                "type": "chat_message",
-                "role": "assistant",
-                "content": "请指明你想深化哪个角度的分析（比如\"深化第一个角度\"）。",
-            })
-            self._add_to_conversation("assistant", "请指明你想深化哪个角度的分析（比如\"深化第一个角度\"）。")
+            reply = "请指明你想深化哪个角度的分析（比如\"深化第一个角度\"）。"
+            await self.broadcast({"type": "chat_message", "role": "assistant", "content": reply})
+            self._add_to_conversation("assistant", reply)
             return
 
         report_data = reports[angle_idx]
@@ -206,7 +475,8 @@ class InsightAgent:
             note_index=note_index,
         )
 
-        tool = self.tools.get("write_report")
+        tools = active_tools or self._tools
+        tool = tools.get("write_report")
         if tool is None:
             await self.broadcast({"type": "error", "message": "write_report tool not found"})
             return
@@ -234,12 +504,9 @@ class InsightAgent:
         """Compare two angles."""
         reports = self.workspace.get("reports", [])
         if len(reports) < 2:
-            await self.broadcast({
-                "type": "chat_message",
-                "role": "assistant",
-                "content": "当前报告数量不足，无法进行角度对比。",
-            })
-            self._add_to_conversation("assistant", "当前报告数量不足，无法进行角度对比。")
+            reply = "当前报告数量不足，无法进行角度对比。"
+            await self.broadcast({"type": "chat_message", "role": "assistant", "content": reply})
+            self._add_to_conversation("assistant", reply)
             return
 
         r1 = reports[0].get("report", {})
@@ -254,18 +521,15 @@ class InsightAgent:
         await self.broadcast({"type": "chat_message", "role": "assistant", "content": comparison})
         self._add_to_conversation("assistant", comparison)
 
-    async def _handle_share_card(self, message: str) -> None:
+    async def _handle_share_card(self, message: str, active_tools: dict[str, Tool] | None = None) -> None:
         """Regenerate share card for a specific angle."""
         angle_idx = self._extract_angle_index(message) or 0
         reports = self.workspace.get("reports", [])
 
         if angle_idx >= len(reports):
-            await self.broadcast({
-                "type": "chat_message",
-                "role": "assistant",
-                "content": "请指明你想为哪个报告生成分享卡片。",
-            })
-            self._add_to_conversation("assistant", "请指明你想为哪个报告生成分享卡片。")
+            reply = "请指明你想为哪个报告生成分享卡片。"
+            await self.broadcast({"type": "chat_message", "role": "assistant", "content": reply})
+            self._add_to_conversation("assistant", reply)
             return
 
         report_data = reports[angle_idx]
@@ -287,7 +551,8 @@ class InsightAgent:
             raw_share_card=report.get("share_card"),
         )
 
-        tool = self.tools.get("render_share_card")
+        tools = active_tools or self._tools
+        tool = tools.get("render_share_card")
         if tool:
             result = await self._execute_tool(tool, render_params)
             if result.success:
@@ -305,12 +570,9 @@ class InsightAgent:
         """Answer a question based on existing reports (RAG-style)."""
         reports = self.workspace.get("reports", [])
         if not reports:
-            await self.broadcast({
-                "type": "chat_message",
-                "role": "assistant",
-                "content": "暂无可用报告，请先完成洞察生成。",
-            })
-            self._add_to_conversation("assistant", "暂无可用报告，请先完成洞察生成。")
+            reply = "暂无可用报告，请先完成洞察生成。"
+            await self.broadcast({"type": "chat_message", "role": "assistant", "content": reply})
+            self._add_to_conversation("assistant", reply)
             return
 
         context_parts = []
@@ -356,15 +618,17 @@ class InsightAgent:
             return 4
         return None
 
-    # ── Tool execution ──
+    # ── Tool execution (Think-aligned) ──
 
-    async def _execute_tool(self, tool: Tool, params: Any) -> ToolResult:
-        """Execute a tool with built-in broadcast events."""
-        await self.broadcast({
-            "type": "tool_start",
-            "tool": tool.name,
-        })
+    async def _execute_tool(self, tool: Tool, params: BaseModel) -> ToolResult:
+        """Execute a tool with Think-style lifecycle hooks.
 
+        Execution flow:
+          1. before_tool_call(tool, params, ctx)
+          2. Check needs_approval (if approved or not required)
+          3. tool.execute(params, ctx)  →  runs handler + before/after hooks
+          4. after_tool_call(tool, params, ctx, result)
+        """
         ctx = ToolContext(
             db=self.db,
             user_id=self.user_id,
@@ -372,27 +636,35 @@ class InsightAgent:
             agent=self,
         )
 
-        import time
-        started = time.perf_counter()
+        # 1. Agent-level before hook
+        await self.before_tool_call(tool, params, ctx)
+
+        # 2. Check approval ( Think-style needsApproval )
+        if tool.check_needs_approval(params):
+            await self.broadcast({
+                "type": "tool_approval_requested",
+                "tool": tool.name,
+                "input": params.model_dump() if hasattr(params, "model_dump") else dict(params),
+            })
+            # In the current FastAPI backend we don't have a real approval
+            # flow, so we auto-approve for now. A full implementation would
+            # pause here and wait for client response.
+            logger.info("Tool %s requires approval — auto-approving in current backend", tool.name)
+
+        # 3. Execute (handler + tool-level before/after hooks)
         try:
-            result = await tool.handler(params, ctx)
+            result = await tool.execute(params, ctx)
         except Exception as exc:
-            duration_ms = int((time.perf_counter() - started) * 1000)
+            logger.exception("Tool %s failed: %s", tool.name, exc)
             result = ToolResult(
                 output=None,
                 success=False,
                 error=str(exc),
-                duration_ms=duration_ms,
+                duration_ms=0,
             )
-            logger.exception("Tool %s failed: %s", tool.name, exc)
 
-        await self.broadcast({
-            "type": "tool_finish",
-            "tool": tool.name,
-            "success": result.success,
-            "duration_ms": result.duration_ms,
-            "error": result.error[:200] if result.error else None,
-        })
+        # 4. Agent-level after hook
+        await self.after_tool_call(tool, params, ctx, result)
 
         return result
 
@@ -461,17 +733,31 @@ class InsightAgent:
     # ── Workspace persistence ──
 
     async def _persist_workspace(self) -> None:
-        """Save the agent's workspace to the DB."""
+        """Save the agent's workspace to the DB.
+
+        Syncs the legacy workspace dict with the session blocks before saving.
+        """
+        # Sync session memory block back to workspace
+        memory_block = self.session.get_block("memory")
+        if memory_block is not None:
+            self.workspace["memory"] = memory_block.content
+
         generation = await self.db.get(InsightGeneration, self.generation_id)
         if generation is not None:
             generation.workspace_json = json.dumps(self.workspace, ensure_ascii=False, default=str)
             await self.db.commit()
 
     async def _restore_workspace(self) -> None:
-        """Restore the agent's workspace from the DB."""
+        """Restore the agent's workspace from the DB.
+
+        Also rehydrates the session from the workspace.
+        """
         generation = await self.db.get(InsightGeneration, self.generation_id)
         if generation is not None and generation.workspace_json:
             try:
                 self.workspace = json.loads(generation.workspace_json)
             except json.JSONDecodeError:
                 self.workspace = {}
+
+        # Rehydrate session blocks from workspace
+        self.session = self.configure_session(self.session)

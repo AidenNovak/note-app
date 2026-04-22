@@ -29,6 +29,10 @@ from app.intelligence.insights.llm import (
 )
 from app.intelligence.insights.schemas_ai import InsightReportOutput
 from app.intelligence.insights.service import broadcast_log, clear_generation_buffers
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.intelligence.insights.agent import InsightAgent
 from app.models import (
     InsightActionItem,
     InsightEvidenceItem,
@@ -117,6 +121,19 @@ def _build_notes_content(notes: list[dict], max_chars: int = MAX_CONTENT_CHARS) 
     return "\n---\n".join(parts)
 
 
+async def _broadcast(
+    event: dict[str, Any],
+    *,
+    generation_id: str,
+    agent: "InsightAgent | None" = None,
+) -> None:
+    """Broadcast an event via agent (Think-style) or fallback to service broadcast_log."""
+    if agent is not None:
+        await agent.broadcast(event)
+    else:
+        await broadcast_log(generation_id, event)
+
+
 async def _generate_single_report(
     *,
     generation_id: str,
@@ -129,16 +146,22 @@ async def _generate_single_report(
     note_index: list[tuple[str, str]],
     note_count: int,
     date: str,
+    agent: "InsightAgent | None" = None,
 ) -> InsightReportOutput | None:
     """Generate one insight report with live SSE streaming."""
-    await broadcast_log(generation_id, {
+    from app.intelligence.insights.llm import _get_group_color
+    color = _get_group_color(group_index)
+
+    await _broadcast({
         "type": "group_started",
         "group": group_index,
         "total_groups": total_groups,
         "theme": theme_name,
         "angle": theme_desc,
         "note_count": note_count,
-    })
+        "accent_color": color["accent"],
+        "bg_color": color["bg"],
+    }, generation_id=generation_id, agent=agent)
 
     try:
         # Step 1: stream markdown
@@ -175,7 +198,15 @@ async def _generate_single_report(
             share_card=extraction.share_card,
         )
 
-        await broadcast_log(generation_id, {
+        # Convert <think> blocks to quote blocks for display
+        import re
+        display_markdown = re.sub(
+            r"<think>([\s\S]*?)</think>",
+            lambda m: "\n\n> **🧠 思考中...**\n> " + m.group(1).strip().replace("\n", "\n> ") + "\n\n",
+            report.report_markdown,
+        )
+
+        await _broadcast({
             "type": "group_completed",
             "group": group_index,
             "total_groups": total_groups,
@@ -183,21 +214,23 @@ async def _generate_single_report(
             "title": report.title,
             "description": report.description,
             "thinking_trace": report.thinking_trace or "",
-            "report_markdown": report.report_markdown,
-        })
+            "report_markdown": display_markdown,
+            "accent_color": color["accent"],
+            "bg_color": color["bg"],
+        }, generation_id=generation_id, agent=agent)
 
         return report
 
     except Exception as exc:
         logger.warning("Report generation failed for theme '%s': %s", theme_name, exc)
-        await broadcast_log(generation_id, {
+        await _broadcast({
             "type": "group_completed",
             "group": group_index,
             "total_groups": total_groups,
             "theme": theme_name,
             "title": "",
             "description": f"生成失败: {exc}",
-        })
+        }, generation_id=generation_id, agent=agent)
         return None
 
 
@@ -307,30 +340,38 @@ async def _persist_reports(
     })
 
 
-async def run_pipeline(db: AsyncSession, generation: InsightGeneration) -> None:
+async def run_pipeline(
+    db: AsyncSession,
+    generation: InsightGeneration,
+    agent: "InsightAgent | None" = None,
+) -> None:
     """Main pipeline entry point.
 
     Phase 0: Dynamic angle discovery (1 fast LLM call)
     Phase 1: Parallel report generation (N streaming LLM calls)
+
+    Think-aligned: if ``agent`` is provided, all events are broadcast through
+    the agent's ``broadcast()`` method (enabling lifecycle hooks and session
+    integration). Otherwise falls back to the module-level ``broadcast_log``.
     """
     generation_id = generation.id
     user_id = generation.user_id
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    await broadcast_log(generation_id, {
+    await _broadcast({
         "type": "starting",
         "message": "Insight Agent 启动...",
-    })
+    }, generation_id=generation_id, agent=agent)
 
     # ── Fetch notes ──
     notes = await _fetch_notes(db, user_id)
     await db.rollback()  # release read-only tx
 
     if not notes:
-        await broadcast_log(generation_id, {
+        await _broadcast({
             "type": "error",
             "message": "请先添加一些笔记再生成洞察。",
-        })
+        }, generation_id=generation_id, agent=agent)
         generation.status = TaskStatus.FAILED
         generation.error = "请先添加一些笔记再生成洞察。"
         generation.completed_at = datetime.now(timezone.utc)
@@ -344,10 +385,10 @@ async def run_pipeline(db: AsyncSession, generation: InsightGeneration) -> None:
     note_index = [(n["id"], n["title"]) for n in sampled]
 
     # ── Phase 0: Dynamic angle discovery ──
-    await broadcast_log(generation_id, {
+    await _broadcast({
         "type": "progress",
         "message": f"正在分析 {note_count} 条笔记，发现洞察角度...",
-    })
+    }, generation_id=generation_id, agent=agent)
 
     themes: list[tuple[str, str, str]] = []
     try:
@@ -361,17 +402,17 @@ async def run_pipeline(db: AsyncSession, generation: InsightGeneration) -> None:
                 angle.angle_name,
                 angle.description,
             ))
-        await broadcast_log(generation_id, {
+        await _broadcast({
             "type": "progress",
             "message": f"发现 {len(themes)} 个分析角度：{', '.join(t[1] for t in themes)}",
-        })
+        }, generation_id=generation_id, agent=agent)
     except Exception as exc:
         logger.warning("Angle discovery failed, using fallback themes: %s", exc)
         themes = list(_FALLBACK_THEMES)
-        await broadcast_log(generation_id, {
+        await _broadcast({
             "type": "progress",
             "message": f"使用默认分析角度：{', '.join(t[1] for t in themes)}",
-        })
+        }, generation_id=generation_id, agent=agent)
 
     total_groups = len(themes)
 
@@ -390,6 +431,7 @@ async def run_pipeline(db: AsyncSession, generation: InsightGeneration) -> None:
             note_index=note_index,
             note_count=note_count,
             date=today,
+            agent=agent,
         )
 
     tasks = [
@@ -409,10 +451,10 @@ async def run_pipeline(db: AsyncSession, generation: InsightGeneration) -> None:
             reports.append(r)
 
     if not reports:
-        await broadcast_log(generation_id, {
+        await _broadcast({
             "type": "error",
             "message": "所有报告生成均失败。",
-        })
+        }, generation_id=generation_id, agent=agent)
         generation.status = TaskStatus.FAILED
         generation.error = "所有报告生成均失败。"
         generation.completed_at = datetime.now(timezone.utc)

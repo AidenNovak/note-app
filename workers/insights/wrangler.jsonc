@@ -1,0 +1,44 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "truth-truth-insights",
+  "main": "src/server.ts",
+  "compatibility_date": "2026-04-22",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "ai": {
+    "binding": "AI"
+  },
+
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "InsightAgent",
+        "class_name": "InsightAgent"
+      }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["InsightAgent"]
+    }
+  ],
+
+  "observability": {
+    "enabled": true
+  },
+
+  "vars": {
+    "AI_PROVIDER": "cloudflare",
+    "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "INSIGHTS_AI_MODEL": "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+    "EMBEDDING_MODEL": "@cf/baai/bge-m3",
+    "AI_MAX_TOKENS": "4096",
+    "AI_TEMPERATURE": "0.7",
+    "FRONTEND_URL": "https://app.jilly.app",
+    "INSIGHT_MAX_CONTEXT_NOTES": "30",
+    "INSIGHT_MAX_NOTE_CHARS": "18000",
+    "MAX_REPORTS": "8"
+  }
+}

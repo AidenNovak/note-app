@@ -165,7 +165,68 @@ async def get_insight_detail(
 
 
 async def _background_generate(generation_id: str) -> None:
-    """Run the insight pipeline in its own db session."""
+    """Run the insight pipeline.
+
+    Mode A (local): runs pipeline in-process (legacy).
+    Mode B (worker): delegates to Cloudflare Worker via HTTP.
+
+    Toggle via WORKER_INSIGHTS_URL env var. If set, FastAPI acts as a
+    proxy — it creates the DB record, calls the Worker, and the Worker
+    writes events back to Supabase. FastAPI's SSE endpoint reads from
+    Supabase as usual, so iOS requires zero changes.
+    """
+    import os
+    worker_url = os.environ.get("WORKER_INSIGHTS_URL", "").rstrip("/")
+
+    if worker_url:
+        await _background_generate_via_worker(generation_id, worker_url)
+    else:
+        await _background_generate_local(generation_id)
+
+
+async def _background_generate_via_worker(generation_id: str, worker_url: str) -> None:
+    """Delegate generation to Cloudflare Worker."""
+    async with async_session() as db:
+        generation = await db.get(InsightGeneration, generation_id)
+        if generation is None:
+            return
+
+        user_id = generation.user_id
+
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # Call Worker to trigger generation
+                resp = await client.post(
+                    f"{worker_url}/api/v1/insights/generate",
+                    json={"user_id": user_id},
+                    headers={"Content-Type": "application/json"},
+                )
+                resp.raise_for_status()
+                worker_result = resp.json()
+                logger.info(
+                    "Worker generation started: generation=%s worker_gen=%s",
+                    generation_id, worker_result.get("id")
+                )
+
+            # Mark local generation as processing
+            generation.status = TaskStatus.PROCESSING
+            generation.workflow_version = "think-v1"
+            await db.commit()
+
+        except Exception as exc:
+            logger.exception("Worker delegation failed for %s", generation_id)
+            generation.status = TaskStatus.FAILED
+            generation.error = f"Worker error: {str(exc)[:400]}"
+            generation.is_active = False
+            generation.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+            await broadcast_log(generation_id, {"type": "error", "message": str(exc)[:300]})
+            clear_generation_buffers(generation_id)
+
+
+async def _background_generate_local(generation_id: str) -> None:
+    """Local pipeline (legacy fallback)."""
     async with async_session() as db:
         generation = await db.get(InsightGeneration, generation_id)
         if generation is None:
