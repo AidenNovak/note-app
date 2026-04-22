@@ -1,3 +1,8 @@
+"""ARCHIVED — OpenRouter AI provider (superseded by Cloudflare Workers AI).
+
+Kept for rollback: set AI_PROVIDER=openrouter in your environment to re-enable.
+See backend/docs/infra/workers-ai-migration.md for rollback instructions.
+"""
 from __future__ import annotations
 
 import logging

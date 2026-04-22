@@ -117,25 +117,53 @@ class Settings(BaseSettings):
         "http://127.0.0.1:8083",
     ]
 
-    # ── Unified AI Configuration ──────────────────────────
-    # All LLM calls go through OpenRouter. Change AI_MODEL to swap globally.
-    # Browse models: https://openrouter.ai/models
-    OPENROUTER_API_KEY: str = ""
-    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-    AI_MODEL: str = "moonshotai/kimi-k2.5"
+    # ── AI Provider ───────────────────────────────────────
+    # Set AI_PROVIDER to switch between Cloudflare Workers AI (default) and
+    # OpenRouter (fallback for rollback). All LLM calls respect this flag.
+    # Values: "cloudflare" | "openrouter"
+    AI_PROVIDER: str = "cloudflare"
+
+    # ── Cloudflare Workers AI ─────────────────────────────
+    # Get your API token at https://dash.cloudflare.com/profile/api-tokens
+    # Required permission: "Workers AI:Read"
+    # Browse models: https://developers.cloudflare.com/workers-ai/models/
+    CF_API_TOKEN: str = ""
+    CF_ACCOUNT_ID: str = ""
+    # Main model — Llama 3.3 70B (fast, capable, solid Chinese support)
+    # Alternatives: @cf/qwen/qwen2.5-72b-instruct (better Chinese if available)
+    AI_MODEL: str = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+    # Reasoning model for insight pipeline (shows chain-of-thought via <think> tags)
+    INSIGHTS_AI_MODEL: str = "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b"
+    # Embedding model — bge-m3 is multilingual (Chinese+English); falls back to
+    # bge-large-en-v1.5 (English-only, 1024 dims) if m3 is not available
+    EMBEDDING_MODEL: str = "@cf/baai/bge-m3"
+
     AI_MAX_TOKENS: int = 4096
     AI_TEMPERATURE: float = 0.7
     AI_STREAMING: bool = True
 
-    # Insights pipeline uses a reasoning-capable model so the user can see
-    # the model "think" in real time. Falls back to AI_MODEL if empty.
-    INSIGHTS_AI_MODEL: str = "moonshotai/kimi-k2-thinking"
+    # ── OpenRouter (fallback / rollback) ──────────────────
+    # Set AI_PROVIDER=openrouter to route all calls back to OpenRouter.
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
 
     # Provider-specific keys (only for specialized tasks, NOT for general LLM)
     OPENAI_API_KEY: str = ""       # Whisper audio transcription
 
-    # Embedding (独立于语言模型)
-    EMBEDDING_MODEL: str = "openai/text-embedding-3-small"
+    @property
+    def cf_ai_base_url(self) -> str:
+        """Cloudflare Workers AI OpenAI-compatible endpoint."""
+        return f"https://api.cloudflare.com/client/v4/accounts/{self.CF_ACCOUNT_ID}/ai/v1"
+
+    @property
+    def ai_api_key(self) -> str:
+        """Active provider API key."""
+        return self.CF_API_TOKEN if self.AI_PROVIDER == "cloudflare" else self.OPENROUTER_API_KEY
+
+    @property
+    def ai_base_url(self) -> str:
+        """Active provider base URL."""
+        return self.cf_ai_base_url if self.AI_PROVIDER == "cloudflare" else self.OPENROUTER_BASE_URL
 
     INSIGHTS_WORKSPACE_ROOT: str = "./data/insights"
     INSIGHT_MAX_CONTEXT_NOTES: int = 12

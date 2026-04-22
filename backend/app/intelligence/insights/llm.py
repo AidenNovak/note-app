@@ -1,16 +1,20 @@
 """Unified LLM layer for the insights pipeline.
 
-All calls route through OpenRouter using the unified ``AI_MODEL``. Output
-shape is enforced at the wire via OpenAI ``response_format`` (json_schema),
-so system prompts in this module describe **analysis intent only** — never
-JSON field shapes.
+All calls route through the configured AI provider (Cloudflare Workers AI by
+default; OpenRouter as fallback — set AI_PROVIDER=openrouter to switch).
+Output shape is enforced via OpenAI ``response_format`` (json_schema, guidance
+only) so system prompts describe **analysis intent only** — never JSON fields.
+
+Reasoning models (e.g. @cf/deepseek-ai/deepseek-r1-distill-qwen-32b) emit
+chain-of-thought inside ``<think>…</think>`` tags which ``_ThinkBlockSplitter``
+strips out and routes to the reasoning channel.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Type, TypeVar
 
 try:
@@ -49,58 +53,65 @@ class GeneratedTextResult:
     reasoning: str = ""
 
 
+@dataclass
+class _AIModel:
+    """Lightweight wrapper carrying a model name and its sync/async OpenAI clients."""
+    name: str
+    sync_client: _openai_lib.OpenAI = field(repr=False)
+    async_client: AsyncOpenAI = field(repr=False)
+
+
 # ── Provider / Model Factory ───────────────────────────
 
 
-def get_model(model_name: str | None = None) -> LanguageModel:
-    """Create an AI SDK model instance via OpenRouter."""
-    model_name = model_name or settings.AI_MODEL
-    api_key = settings.OPENROUTER_API_KEY
-
-    if not _HAS_AI_SDK:
-        return _openai_lib.OpenAI(
-            api_key=api_key,
-            base_url=settings.OPENROUTER_BASE_URL,
-        )
-
-    model = OpenAIModel(model_name, api_key=api_key)
-    model._client = _openai_lib.OpenAI(
-        api_key=api_key,
-        base_url=settings.OPENROUTER_BASE_URL,
+def _make_clients(api_key: str, base_url: str) -> tuple[_openai_lib.OpenAI, AsyncOpenAI]:
+    """Create a matched sync + async OpenAI client pair for the given endpoint."""
+    return (
+        _openai_lib.OpenAI(api_key=api_key, base_url=base_url),
+        AsyncOpenAI(api_key=api_key, base_url=base_url),
     )
-    return model
 
 
-def get_agent_model() -> LanguageModel:
+def get_model(model_name: str | None = None) -> _AIModel:
+    """Return an _AIModel pointed at the configured provider."""
+    name = model_name or settings.AI_MODEL
+    sync_c, async_c = _make_clients(settings.ai_api_key, settings.ai_base_url)
+    return _AIModel(name=name, sync_client=sync_c, async_client=async_c)
+
+
+def get_agent_model() -> _AIModel:
     return get_model()
 
 
-def get_insights_model() -> LanguageModel:
+def get_insights_model() -> _AIModel:
     """Reasoning-capable model for the insights pipeline.
 
-    Falls back to ``AI_MODEL`` when ``INSIGHTS_AI_MODEL`` is empty.
+    Falls back to AI_MODEL when INSIGHTS_AI_MODEL is empty.
     """
     return get_model(model_name=settings.INSIGHTS_AI_MODEL or settings.AI_MODEL)
 
 
-# ── Async client (for true async streaming) ────────────
+# ── Shared async client ────────────────────────────────
+# Kept for callers that only need the async client and don't care about model.
 
 _async_client: AsyncOpenAI | None = None
 
 
 def get_async_client() -> AsyncOpenAI:
-    """Return a shared AsyncOpenAI client for OpenRouter."""
+    """Return a shared AsyncOpenAI client for the configured provider."""
     global _async_client
     if _async_client is None:
         _async_client = AsyncOpenAI(
-            api_key=settings.OPENROUTER_API_KEY,
-            base_url=settings.OPENROUTER_BASE_URL,
+            api_key=settings.ai_api_key,
+            base_url=settings.ai_base_url,
         )
     return _async_client
 
 
-def _resolve_model_id(model: LanguageModel, default: str) -> str:
-    """Recover the wire model id from either the ai_sdk wrapper or a fallback."""
+def _resolve_model_id(model: "_AIModel | Any", default: str) -> str:
+    """Recover the wire model id from an _AIModel wrapper or a fallback."""
+    if isinstance(model, _AIModel):
+        return model.name
     return getattr(model, "_model", None) or default
 
 
@@ -176,7 +187,10 @@ def _extract_message_text(content: Any) -> str:
     return ""
 
 
-def _resolve_openai_client(model: LanguageModel):
+def _resolve_openai_client(model: "_AIModel | Any"):
+    """Extract the sync OpenAI client from an _AIModel or legacy wrapper."""
+    if isinstance(model, _AIModel):
+        return model.sync_client
     client = getattr(model, "_client", None)
     if client is None or not hasattr(client, "chat"):
         if hasattr(model, "chat"):
@@ -188,7 +202,7 @@ def _resolve_openai_client(model: LanguageModel):
 
 def _generate_text_sync(
     *,
-    model: LanguageModel,
+    model: "_AIModel | Any",
     system: str,
     prompt: str,
     max_tokens: int,
@@ -214,7 +228,7 @@ def _generate_text_sync(
 
     client = _resolve_openai_client(model)
     payload: dict[str, Any] = {
-        "model": settings.AI_MODEL,
+        "model": _resolve_model_id(model, settings.AI_MODEL),
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": prompt},
@@ -237,7 +251,7 @@ def _generate_text_sync(
 
 async def _generate_text_result(
     *,
-    model: LanguageModel,
+    model: "_AIModel | Any",
     system: str,
     prompt: str,
     max_tokens: int,
@@ -332,7 +346,7 @@ class _ThinkBlockSplitter:
 
 def _stream_text_sync(
     *,
-    model: LanguageModel,
+    model: "_AIModel | Any",
     system: str,
     prompt: str,
     max_tokens: int,
@@ -359,10 +373,11 @@ def _stream_text_sync(
         "temperature": temperature,
         "stream": True,
         "stream_options": {"include_usage": True},
-        # OpenRouter convention: surface a ``reasoning`` delta when the
-        # underlying model produces a chain-of-thought trace.
-        "extra_body": {"reasoning": {"enabled": True}},
     }
+    # OpenRouter-specific: surface reasoning chain-of-thought delta.
+    # CF Workers AI uses <think>…</think> tags handled by _ThinkBlockSplitter.
+    if settings.AI_PROVIDER == "openrouter":
+        payload["extra_body"] = {"reasoning": {"enabled": True}}
 
     splitter = _ThinkBlockSplitter()
     full_content: list[str] = []
@@ -419,7 +434,7 @@ def _stream_text_sync(
 
 async def _stream_text_result(
     *,
-    model: LanguageModel,
+    model: "_AIModel | Any",
     system: str,
     prompt: str,
     max_tokens: int,
@@ -505,8 +520,10 @@ async def stream_text_async(
         "temperature": temperature,
         "stream": True,
         "stream_options": {"include_usage": True},
-        "extra_body": {"reasoning": {"enabled": True}},
     }
+    # OpenRouter-specific reasoning delta; CF uses <think> tags in content.
+    if settings.AI_PROVIDER == "openrouter":
+        payload["extra_body"] = {"reasoning": {"enabled": True}}
 
     splitter = _ThinkBlockSplitter()
     full_content: list[str] = []
@@ -587,7 +604,7 @@ async def generate_report(
     *,
     system: str,
     user_prompt: str,
-    model: LanguageModel | None = None,
+    model: "_AIModel | None" = None,
 ) -> InsightReportOutput:
     model = model or get_model()
     result = await _generate_text_result(
@@ -609,7 +626,7 @@ async def generate_groups(
     *,
     system: str,
     user_prompt: str,
-    model: LanguageModel | None = None,
+    model: "_AIModel | None" = None,
 ) -> NoteGroupListOutput:
     model = model or get_agent_model()
     result = await _generate_text_result(
@@ -650,7 +667,7 @@ async def discover_angles(
     *,
     cluster_summaries: str,
     num_angles: int = 4,
-    model: LanguageModel | None = None,
+    model: "_AIModel | None" = None,
 ) -> AngleListOutput:
     """Use LLM to discover analysis angles from cluster summaries."""
     model = model or get_model()
@@ -697,7 +714,7 @@ async def discover_angles_from_notes(
     *,
     notes_content: str,
     note_count: int,
-    model: LanguageModel | None = None,
+    model: "_AIModel | None" = None,
 ) -> AngleListOutput:
     """Discover analysis angles directly from raw notes (no clustering).
 
@@ -858,7 +875,7 @@ async def write_report_markdown(
     notes_content: str,
     generation_id: str,
     group_index: int,
-    model: LanguageModel | None = None,
+    model: "_AIModel | None" = None,
 ) -> GeneratedTextResult:
     """Step 1 — stream a free-form markdown report. Broadcasts deltas live."""
     from app.intelligence.insights.service import broadcast_log
@@ -889,6 +906,7 @@ async def write_report_markdown(
         prompt=notes_content,
         max_tokens=settings.AI_MAX_TOKENS,
         temperature=settings.AI_TEMPERATURE,
+        model_name=model.name if isinstance(model, _AIModel) else _resolve_model_id(model, settings.INSIGHTS_AI_MODEL or settings.AI_MODEL),
         on_delta=on_delta,
     )
 
@@ -913,7 +931,7 @@ async def extract_report_metadata(
     note_index: list[tuple[str, str]],
     note_count: int,
     date: str,
-    model: LanguageModel | None = None,
+    model: "_AIModel | None" = None,
 ) -> InsightReportExtractionOutput:
     """Step 2 — one-shot strict-JSON extraction over the Step-1 markdown."""
     model = model or get_model()  # cheaper general model is fine here
@@ -978,7 +996,7 @@ async def generate_report_for_angle(
     date: str,
     generation_id: str,
     group_index: int,
-    model: LanguageModel | None = None,
+    model: "_AIModel | None" = None,
     note_index: list[tuple[str, str]] | None = None,
 ) -> InsightReportOutput:
     """Generate a single insight report for one analysis angle.

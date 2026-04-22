@@ -1,4 +1,15 @@
-"""Embedding generation and similarity computation via OpenRouter embeddings API."""
+"""Embedding generation and similarity computation.
+
+Cloudflare Workers AI (default) — calls the native REST API:
+  POST /accounts/{id}/ai/run/{model}
+  Auth: Bearer {CF_API_TOKEN}
+  Request body: {"text": "..."}
+  Response: {"result": {"data": [[...floats...]]}}
+
+OpenRouter (fallback, AI_PROVIDER=openrouter) — OpenAI-compatible endpoint:
+  POST /api/v1/embeddings
+  Auth: Bearer {OPENROUTER_API_KEY}
+"""
 from __future__ import annotations
 
 import json
@@ -28,9 +39,39 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
 
 
 async def generate_embedding(text: str) -> list[float]:
-    """Call OpenRouter /api/v1/embeddings to get a vector for *text*."""
+    """Generate a vector embedding for *text* via the configured AI provider."""
+    if settings.AI_PROVIDER == "openrouter":
+        return await _generate_embedding_openrouter(text)
+    return await _generate_embedding_cloudflare(text)
+
+
+async def _generate_embedding_cloudflare(text: str) -> list[float]:
+    """Call Cloudflare Workers AI native embeddings API."""
+    if not settings.CF_API_TOKEN or not settings.CF_ACCOUNT_ID:
+        raise RuntimeError("CF_API_TOKEN and CF_ACCOUNT_ID are required for Cloudflare embeddings")
+
+    url = (
+        f"https://api.cloudflare.com/client/v4/accounts"
+        f"/{settings.CF_ACCOUNT_ID}/ai/run/{settings.EMBEDDING_MODEL}"
+    )
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {settings.CF_API_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            json={"text": text[:8000]},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data["result"]["data"][0]
+
+
+async def _generate_embedding_openrouter(text: str) -> list[float]:
+    """Call OpenRouter OpenAI-compatible embeddings endpoint (fallback)."""
     if not settings.OPENROUTER_API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY is not configured")
+        raise RuntimeError("OPENROUTER_API_KEY is required for OpenRouter embeddings")
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(
