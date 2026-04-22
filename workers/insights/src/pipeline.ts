@@ -54,6 +54,79 @@ function sampleNotes(notes: Note[], maxNotes = MAX_NOTES): Note[] {
   return scored.slice(0, deterministicCount).concat(randomPick);
 }
 
+/**
+ * Semantic note selection using Vectorize + multi-seed strategy.
+ *
+ * Strategy:
+ *   1. Always keep the FRESHNESS_COUNT most recent notes (new notes not yet indexed)
+ *   2. Use the top SEED_COUNT recent notes as query seeds (multi-seed for breadth)
+ *   3. Union Vectorize top-K results across all seeds
+ *   4. Fill remaining slots by merging with freshness notes, preserving Vectorize ranking
+ *   5. Fall back to sampleNotes() if Vectorize has < MIN_SEMANTIC_RESULTS (cold start)
+ *
+ * namespace = userId ensures strict tenant isolation without metadata index overhead.
+ */
+async function selectNotesForInsight(
+  env: Env,
+  userId: string,
+  allNotes: Note[],
+  maxNotes = MAX_NOTES
+): Promise<Note[]> {
+  if (allNotes.length <= maxNotes) return allNotes;
+
+  const FRESHNESS_COUNT = 5;   // always included regardless of Vectorize
+  const SEED_COUNT = 3;        // number of recent notes used as query seeds
+  const TOPK_PER_SEED = 20;    // Vectorize results per seed
+  const MIN_SEMANTIC_RESULTS = 5; // fallback threshold
+
+  // Step 1: guaranteed freshness pool (most recent notes by updated_at)
+  const recentNotes = allNotes.slice(0, FRESHNESS_COUNT);
+  const freshIds = new Set(recentNotes.map((n) => n.id));
+
+  // Step 2: multi-seed Vectorize query
+  const semanticIds: string[] = [];
+  const seeds = allNotes.slice(0, SEED_COUNT);
+
+  for (const seed of seeds) {
+    try {
+      const seedText = `${seed.title} ${(seed.markdown_content || "").slice(0, 500)}`.slice(0, 8000);
+      const aiResult = await env.AI.run("@cf/baai/bge-m3" as any, { text: seedText } as any) as any;
+      const seedVector: number[] = aiResult.data[0];
+
+      const matches = await env.VECTORIZE.query(seedVector, {
+        topK: TOPK_PER_SEED,
+        namespace: userId,
+        returnValues: false,
+        returnMetadata: "none",
+      });
+      for (const m of matches.matches) {
+        if (!semanticIds.includes(m.id)) semanticIds.push(m.id);
+      }
+    } catch {
+      // Vectorize unavailable or index empty for this user — skip seed
+    }
+  }
+
+  // Step 3: fall back to tag/length sampling if Vectorize returned too few results
+  if (semanticIds.length < MIN_SEMANTIC_RESULTS) {
+    return sampleNotes(allNotes, maxNotes);
+  }
+
+  // Step 4: merge freshness + semantic, deduplicated, preserving semantic rank order
+  const merged: string[] = [
+    ...recentNotes.map((n) => n.id),
+    ...semanticIds.filter((id) => !freshIds.has(id)),
+  ];
+
+  // Step 5: resolve IDs back to Note objects (use allNotes map to avoid extra DB fetch)
+  const allNotesMap = new Map(allNotes.map((n) => [n.id, n]));  const selected = merged
+    .map((id) => allNotesMap.get(id))
+    .filter((n): n is Note => n !== undefined)
+    .slice(0, maxNotes);
+
+  return selected;
+}
+
 function buildNotesContent(notes: Note[], maxChars = MAX_CONTENT_CHARS): string {
   const parts: string[] = [];
   let totalChars = 0;
@@ -159,7 +232,7 @@ async function broadcastDeltas(
 
     const now = Date.now();
     if (now - lastBroadcast >= DELTA_BUFFER_MS && buffer.length > 0) {
-      await agent.broadcast({
+      await agent.broadcastEvent({
         type: "markdown_delta",
         group: groupIndex,
         text: buffer,
@@ -172,7 +245,7 @@ async function broadcastDeltas(
   // Flush remaining buffer + transformer
   const remaining = transformer.flush();
   if (buffer.length > 0 || remaining.length > 0) {
-    await agent.broadcast({
+    await agent.broadcastEvent({
       type: "markdown_delta",
       group: groupIndex,
       text: buffer + remaining,
@@ -242,7 +315,7 @@ async function generateSingleReport(
   const color = (theme as any)._color || GROUP_COLORS[0];
 
   // Broadcast start with visual theme
-  await agent.broadcast({
+  await agent.broadcastEvent({
     type: "group_started",
     group: groupIndex,
     total_groups: totalGroups,
@@ -359,7 +432,7 @@ Return JSON with this exact shape:
       return "\n\n> **🧠 思考中...**\n> " + inner.split("\n").map((l: string) => "> " + l).join("\n") + "\n\n";
     });
 
-    await agent.broadcast({
+    await agent.broadcastEvent({
       type: "group_completed",
       group: groupIndex,
       total_groups: totalGroups,
@@ -375,7 +448,7 @@ Return JSON with this exact shape:
     return report;
   } catch (err) {
     console.error(`Report generation failed for theme '${theme.angle_name}':`, err);
-    await agent.broadcast({
+    await agent.broadcastEvent({
       type: "group_completed",
       group: groupIndex,
       total_groups: totalGroups,
@@ -398,34 +471,40 @@ export async function runPipeline(
   const userId = generation.user_id;
   const today = new Date().toISOString().split("T")[0];
 
-  await db.updateGeneration(env, generationId, { status: "processing" });
+  console.log(`[pipeline] START generationId=${generationId} userId=${userId}`);
+  await db.updateGeneration(env, generationId, { status: "PROCESSING" });
+  console.log(`[pipeline] status → PROCESSING`);
 
-  // Fetch notes
-  const notes = await db.fetchUserNotes(env, userId, MAX_NOTES);
+  // Fetch notes (always fetch more than MAX_NOTES so semantic selection has a full pool)
+  const notes = await db.fetchUserNotes(env, userId, 200);
+  console.log(`[pipeline] fetchUserNotes → ${notes.length} notes`);
   if (notes.length === 0) {
-    await agent.broadcast({
+    await agent.broadcastEvent({
       type: "error",
       message: "请先添加一些笔记再生成洞察。",
     });
     await db.updateGeneration(env, generationId, {
-      status: "failed",
+      status: "FAILED",
       error: "请先添加一些笔记再生成洞察。",
     });
     return;
   }
 
-  const sampled = sampleNotes(notes);
+  const sampled = await selectNotesForInsight(env, userId, notes);
   const noteCount = sampled.length;
   const notesContent = buildNotesContent(sampled);
+  console.log(`[pipeline] selectNotes → ${noteCount} notes, content ${notesContent.length} chars`);
 
   // Phase 0: Discover angles
-  await agent.broadcast({
+  await agent.broadcastEvent({
     type: "progress",
     message: `正在分析 ${noteCount} 条笔记，发现洞察角度...`,
   });
 
+  console.log(`[pipeline] discoverAngles START`);
   const angles = await discoverAngles(env, notesContent, noteCount, agent);
-  await agent.broadcast({
+  console.log(`[pipeline] discoverAngles → ${angles.length} angles: ${angles.map((a) => a.angle_name).join(", ")}`);
+  await agent.broadcastEvent({
     type: "progress",
     message: `发现 ${angles.length} 个分析角度：${angles.map((a) => a.angle_name).join(", ")}`,
   });
@@ -433,6 +512,7 @@ export async function runPipeline(
   const totalGroups = angles.length;
 
   // Phase 1: Parallel generation
+  console.log(`[pipeline] generating ${totalGroups} reports in parallel`);
   const tasks = angles.map((angle, i) =>
     generateSingleReport(
       env,
@@ -448,17 +528,18 @@ export async function runPipeline(
   );
 
   const results = await Promise.all(tasks);
+  console.log(`[pipeline] all reports done, ${results.filter(Boolean).length}/${results.length} succeeded`);
 
   // Filter out failures
   const reports = results.filter((r): r is InsightReportOutput => r !== null);
 
   if (reports.length === 0) {
-    await agent.broadcast({
+    await agent.broadcastEvent({
       type: "error",
       message: "所有报告生成均失败。",
     });
     await db.updateGeneration(env, generationId, {
-      status: "failed",
+      status: "FAILED",
       error: "所有报告生成均失败。",
     });
     return;
@@ -466,13 +547,15 @@ export async function runPipeline(
 
   // Persist to database
   const noteIds = sampled.map((n) => n.id);
+  console.log(`[pipeline] persistReports START`);
   await db.persistReports(env, generationId, userId, reports, noteIds);
+  console.log(`[pipeline] persistReports DONE`);
 
   // Final broadcast
-  await agent.broadcast({
+  await agent.broadcastEvent({
     type: "completed",
     summary: `生成了 ${reports.length} 篇洞察报告，分析了 ${noteCount} 条笔记`,
   });
 
-  console.log(`Pipeline completed: ${reports.length} reports, generation=${generationId}`);
+  console.log(`[pipeline] COMPLETED: ${reports.length} reports, generation=${generationId}`);
 }

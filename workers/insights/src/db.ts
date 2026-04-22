@@ -29,6 +29,26 @@ export function getSupabase(env: Env): SupabaseClient {
   return _supabase;
 }
 
+/** Convert any thrown value (Supabase error object, Error, string) to a message string. */
+export function toErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object") {
+    const e = err as Record<string, unknown>;
+    if (typeof e.message === "string") return e.message;
+    if (typeof e.details === "string") return e.details;
+    if (typeof e.hint === "string") return e.hint;
+    return JSON.stringify(err);
+  }
+  return String(err);
+}
+
+/** Throw a proper Error from a Supabase PostgREST error object. */
+function assertNoError(error: unknown, context?: string): void {
+  if (!error) return;
+  const msg = toErrorMessage(error);
+  throw new Error(context ? `${context}: ${msg}` : msg);
+}
+
 // ── Notes ──
 
 export async function fetchUserNotes(
@@ -44,7 +64,7 @@ export async function fetchUserNotes(
     .order("updated_at", { ascending: false })
     .limit(limit);
 
-  if (error) throw error;
+  assertNoError(error);
 
   return (data || []).map((row: any) => ({
     id: row.id,
@@ -59,25 +79,32 @@ export async function fetchUserNotes(
 
 export async function fetchNotesByIds(
   env: Env,
+  userId: string,
   noteIds: string[]
 ): Promise<Note[]> {
   const sb = getSupabase(env);
   const { data, error } = await sb
     .from("notes")
     .select("id, title, markdown_content, created_at, updated_at, user_id, note_tags(tag)")
-    .in("id", noteIds);
+    .in("id", noteIds)
+    .eq("user_id", userId); // tenant isolation
 
-  if (error) throw error;
+  assertNoError(error);
 
-  return (data || []).map((row: any) => ({
-    id: row.id,
-    title: row.title || "Untitled",
-    markdown_content: row.markdown_content || "",
-    tags: (row.note_tags || []).map((t: any) => t.tag),
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-    user_id: row.user_id,
-  }));
+  // Preserve Vectorize ranking order
+  const noteMap = new Map((data || []).map((row: any) => [row.id, row]));
+  return noteIds
+    .map((id) => noteMap.get(id))
+    .filter(Boolean)
+    .map((row: any) => ({
+      id: row.id,
+      title: row.title || "Untitled",
+      markdown_content: row.markdown_content || "",
+      tags: (row.note_tags || []).map((t: any) => t.tag),
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      user_id: row.user_id,
+    }));
 }
 
 // ── Mind Connections ──
@@ -92,7 +119,7 @@ export async function fetchMindConnections(
     .select("*")
     .eq("user_id", userId);
 
-  if (error) throw error;
+  assertNoError(error);
   return (data || []).map((row: any) => ({
     id: row.id,
     user_id: row.user_id,
@@ -117,7 +144,7 @@ export async function createGeneration(
     .from("insight_generations")
     .select("*")
     .eq("user_id", userId)
-    .in("status", ["pending", "processing"])
+    .in("status", ["PENDING", "PROCESSING"])
     .order("created_at", { ascending: false })
     .limit(1)
     .single();
@@ -126,31 +153,34 @@ export async function createGeneration(
     const updatedAt = new Date(existing.updated_at || existing.created_at);
     const ageMs = Date.now() - updatedAt.getTime();
     const staleMs =
-      existing.status === "pending" ? 45_000 : 20 * 60_000;
+      existing.status === "PENDING" ? 45_000 : 20 * 60_000;
     if (ageMs < staleMs) {
       return existing as InsightGeneration;
     }
     // Mark stale as failed
     await sb
       .from("insight_generations")
-      .update({ status: "failed", error: "Previous generation was interrupted" })
+      .update({ status: "FAILED", error: "Previous generation was interrupted" })
       .eq("id", existing.id);
   }
 
+  const now = new Date().toISOString();
   const { data, error } = await sb
     .from("insight_generations")
     .insert({
       id: crypto.randomUUID(),
       user_id: userId,
-      status: "pending",
+      status: "PENDING",
       workflow_version: "think-v1",
       is_active: false,
       total_reports: 0,
+      created_at: now,
+      updated_at: now,
     })
     .select()
     .single();
 
-  if (error) throw error;
+  assertNoError(error);
   return data as InsightGeneration;
 }
 
@@ -179,7 +209,7 @@ export async function updateGeneration(
     .from("insight_generations")
     .update(updates)
     .eq("id", generationId);
-  if (error) throw error;
+  assertNoError(error);
 }
 
 // ── Insight Reports ──
@@ -205,6 +235,7 @@ export async function persistReports(
     const reportId = crypto.randomUUID();
 
     // Insert report
+    const now = new Date().toISOString();
     const { error: rErr } = await sb.from("insight_reports").insert({
       id: reportId,
       generation_id: generationId,
@@ -221,9 +252,10 @@ export async function persistReports(
       report_markdown: report.report_markdown,
       report_json: JSON.stringify(report),
       source_note_ids: JSON.stringify(allNoteIds),
-      generated_at: new Date().toISOString(),
+      created_at: now,
+      generated_at: now,
     });
-    if (rErr) throw rErr;
+    assertNoError(rErr, "insight_reports insert");
 
     // Insert evidence items
     if (report.evidence_items?.length) {
@@ -234,8 +266,10 @@ export async function persistReports(
         quote: ev.quote.slice(0, 500),
         rationale: ev.rationale.slice(0, 500),
         sort_order: i + 1,
+        created_at: now,
       }));
-      await sb.from("insight_evidence_items").insert(evidence);
+      const { error: evErr } = await sb.from("insight_evidence_items").insert(evidence);
+      assertNoError(evErr, "insight_evidence_items insert");
     }
 
     // Insert action items
@@ -247,8 +281,10 @@ export async function persistReports(
         detail: act.detail.slice(0, 500),
         priority: act.priority,
         sort_order: i + 1,
+        created_at: now,
       }));
-      await sb.from("insight_action_items").insert(actions);
+      const { error: actErr } = await sb.from("insight_action_items").insert(actions);
+      assertNoError(actErr, "insight_action_items insert");
     }
   }
 
@@ -256,7 +292,7 @@ export async function persistReports(
   await sb
     .from("insight_generations")
     .update({
-      status: "completed",
+      status: "COMPLETED",
       total_reports: reports.length,
       is_active: true,
       summary: `生成了 ${reports.length} 篇洞察报告`,
@@ -266,24 +302,16 @@ export async function persistReports(
 }
 
 // ── Event Store (for FastAPI SSE bridge) ──
+// insight_events table is no longer used — events are stored in DO SQLite.
+// These functions are kept as no-ops for backward compatibility.
 
 export async function getEventsAfter(
-  env: Env,
-  generationId: string,
-  afterSequence: number,
-  limit = 100
+  _env: Env,
+  _generationId: string,
+  _afterSequence: number,
+  _limit = 100
 ): Promise<Array<{ sequence: number; payload_json: string | Record<string, unknown> }>> {
-  const sb = getSupabase(env);
-  const { data, error } = await sb
-    .from("insight_events")
-    .select("sequence, payload_json")
-    .eq("generation_id", generationId)
-    .gt("sequence", afterSequence)
-    .order("sequence", { ascending: true })
-    .limit(limit);
-
-  if (error) throw error;
-  return (data || []) as Array<{ sequence: number; payload_json: string | Record<string, unknown> }>;
+  return [];
 }
 
 export async function getLatestGeneration(
@@ -303,22 +331,14 @@ export async function getLatestGeneration(
   return data as InsightGeneration;
 }
 
-// ── Event Store (for FastAPI SSE bridge) ──
+// ── Event appending (no-op — DO SQLite handles event persistence) ──
 
 export async function appendEvent(
-  env: Env,
-  generationId: string,
-  event: Record<string, unknown>
+  _env: Env,
+  _generationId: string,
+  _event: Record<string, unknown>
 ): Promise<void> {
-  const sb = getSupabase(env);
-  const { error } = await sb.from("insight_events").insert({
-    generation_id: generationId,
-    event_type: String(event.type || "unknown"),
-    sequence: Number(event.sequence || 0),
-    group_index: event.group != null ? Number(event.group) : null,
-    payload_json: JSON.stringify(event),
-  });
-  if (error) throw error;
+  // Events are now stored in Durable Object SQLite, not Supabase.
 }
 
 // ── FastAPI bridge (for PNG rendering) ──

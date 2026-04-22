@@ -8,7 +8,7 @@
  */
 
 // ── TaskStatus ──
-export type TaskStatus = "pending" | "processing" | "completed" | "failed";
+export type TaskStatus = "PENDING" | "PROCESSING" | "COMPLETED" | "FAILED";
 
 // ── Note ──
 export interface Note {

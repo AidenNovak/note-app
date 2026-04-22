@@ -25,7 +25,7 @@ import type { AgentConfig } from "./types";
 
 export class InsightAgent extends Think<Env, AgentConfig> {
   declare env: Env;
-  declare ctx: DurableObjectState;
+  declare ctx: DurableObjectState<{}>;
   chatRecovery = true;
   private _sequence = 0;
   private _generationId = "";
@@ -37,10 +37,22 @@ export class InsightAgent extends Think<Env, AgentConfig> {
 
   /**
    * Broadcast an event to both WebSocket clients and Supabase.
-   * Since Think doesn't expose a public broadcast API, we only
-   * persist to Supabase (FastAPI SSE bridge will pick it up).
+   *
+   * Renamed from `broadcast` to avoid signature collision with Think.broadcast
+   * (which sends raw strings/binary to WebSocket connections).
+   *
+   * Calls Think.broadcast(JSON.stringify(event)) for live WebSocket delivery,
+   * then persists the event to Supabase so the FastAPI SSE bridge can replay it.
    */
-  async broadcast(event: Record<string, unknown>): Promise<void> {
+  async broadcastEvent(event: Record<string, unknown>): Promise<void> {
+    // WebSocket delivery to all connected clients
+    try {
+      this.broadcast(JSON.stringify({ ...event, sequence: this._sequence + 1 }));
+    } catch {
+      // Ignore if no clients are connected
+    }
+
+    // Supabase persistence for SSE replay
     if (this._generationId && this.env.SUPABASE_URL) {
       try {
         this._sequence++;
@@ -159,7 +171,54 @@ export class InsightAgent extends Think<Env, AgentConfig> {
     };
   }
 
-  // ── HTTP request handler (for DO stub.fetch calls) ──
+  // ── Internal HTTP trigger (bypasses Agents SDK routing header validation) ──
+
+  async fetch(request: Request): Promise<Response> {
+    const url = new URL(request.url);
+
+    // Internal trigger from the Worker's handleGenerate:
+    //   POST /run/:generationId  { user_id, generation_id }
+    // This path bypasses the Agents SDK header check so ctx.waitUntil works
+    // without needing proper WebSocket routing headers.
+    const runMatch = url.pathname.match(/^\/run\/([^/]+)$/);
+    console.log("[InsightAgent.fetch] path:", url.pathname, "method:", request.method, "runMatch:", !!runMatch);
+    if (runMatch && request.method === "POST") {
+      let body: { user_id?: string; generation_id?: string } = {};
+      try { body = await request.json(); } catch (parseErr) {
+        console.error("[InsightAgent.fetch] JSON parse error:", parseErr);
+      }
+      const genId = body.generation_id || runMatch[1];
+      const userId = body.user_id;
+      console.log("[InsightAgent.fetch] genId:", genId, "userId:", userId);
+      if (genId && userId) {
+        this._generationId = genId;
+        console.log("[InsightAgent.fetch] fetching generation from Supabase...");
+        const gen = await db.getGeneration(this.env, genId);
+        console.log("[InsightAgent.fetch] generation found:", gen ? "yes" : "no");
+        if (gen) {
+          this.ctx.waitUntil(
+            runPipeline(this.env, gen, this).catch(async (err: unknown) => {
+              const msg = db.toErrorMessage(err);
+              console.error("Pipeline failed:", msg);
+              await db.updateGeneration(this.env, genId, {
+                status: "FAILED",
+                error: msg.slice(0, 500),
+              });
+            })
+          );
+          console.log("[InsightAgent.fetch] pipeline queued via ctx.waitUntil");
+        }
+      }
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 202,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    return super.fetch(request);
+  }
+
+  // ── HTTP request handler (called by Think/Agent base for routed requests) ──
 
   async onRequest(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -192,7 +251,7 @@ export class InsightAgent extends Think<Env, AgentConfig> {
         } catch (err) {
           console.error("Pipeline failed:", err);
           await db.updateGeneration(this.env, generation.id, {
-            status: "failed",
+            status: "FAILED",
             error: String(err).slice(0, 500),
           });
         }

@@ -102,28 +102,27 @@ async function handleGenerate(request: Request, env: Env, ctx: ExecutionContext)
     // Create generation in Supabase
     const generation = await db.createGeneration(env, userId);
 
-    // Get or create DO stub for this generation
-    const id = env.InsightAgent.idFromName(generation.id);
-    const stub = env.InsightAgent.get(id);
+    // Get DO stub for this generation (keyed by generation ID)
+    const doId = env.InsightAgent.idFromName(generation.id);
+    const stub = env.InsightAgent.get(doId);
 
-    // Kick off generation via DO stub.fetch (non-blocking)
+    // Kick off pipeline via internal DO route /run/:generationId
+    // (bypasses Agents SDK routing header validation — see InsightAgent.fetch override)
     ctx.waitUntil(
-      (async () => {
-        try {
-          await stub.fetch(
-            new Request("http://internal/generate", {
-              method: "POST",
-              body: JSON.stringify({ user_id: userId }),
-            })
-          );
-        } catch (err) {
-          console.error("Worker generation failed:", err);
-          await db.updateGeneration(env, generation.id, {
-            status: "failed",
-            error: String(err).slice(0, 500),
-          });
-        }
-      })()
+      stub.fetch(
+        new Request(`http://internal/run/${generation.id}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user_id: userId, generation_id: generation.id }),
+        })
+      ).catch(async (err: unknown) => {
+        const msg = err instanceof Error ? err.message : JSON.stringify(err);
+        console.error("DO trigger failed:", msg);
+        await db.updateGeneration(env, generation.id, {
+          status: "FAILED",
+          error: msg.slice(0, 500),
+        });
+      })
     );
 
     return jsonResponse(
@@ -139,8 +138,9 @@ async function handleGenerate(request: Request, env: Env, ctx: ExecutionContext)
       env
     );
   } catch (err) {
-    console.error("Generate handler failed:", err);
-    return jsonResponse({ error: String(err) }, 500, env);
+    const msg = err instanceof Error ? err.message : JSON.stringify(err);
+    console.error("Generate handler failed:", msg);
+    return jsonResponse({ error: msg }, 500, env);
   }
 }
 
