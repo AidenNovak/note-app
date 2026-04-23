@@ -281,7 +281,7 @@ async def _background_generate_via_worker(generation_id: str, worker_url: str) -
 
             # Mark local generation as processing
             generation.status = TaskStatus.PROCESSING
-            generation.workflow_version = "think-v1"
+            generation.workflow_version = "parallel-v1"
             await db.commit()
 
         except Exception as exc:
